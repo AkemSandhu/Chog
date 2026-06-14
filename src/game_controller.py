@@ -1,0 +1,409 @@
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QDialog
+from typing import Optional, List, Tuple
+from datetime import datetime
+import os
+
+from chog.core.board import Board
+from chog.core.pieces import Colour, PieceType, Piece, PIECE_SYMBOLS, PROMOTABLE_TYPES, PROMOTION_TARGETS
+from chog.core.movegen import Move, legal_moves
+from chog.core.game_state import GameState, game_result
+from chog.core.rules import _is_promotion_zone, _piece_can_move_from, material_score
+from chog.io.fpgn import FPGNWriter, move_to_fpgn, FPGNReader
+from chog.engine.manager import EngineManager
+from chog.engine.protocol import uci_to_move
+from chog.ui.board_widget import BoardWidget
+from chog.ui.move_list import MoveListWidget
+from chog.ui.clock_widget import ClockWidget
+from chog.ui.promotion_dialog import PromotionDialog
+
+
+class GameController(QObject):
+    move_made = Signal()
+    game_ended = Signal(str)            # result description
+    status_update = Signal(str)         # status bar message
+    position_changed = Signal()         # emitted whenever board/state changes
+
+    def __init__(self,
+                 board_widget: BoardWidget,
+                 move_list: MoveListWidget,
+                 white_clock: ClockWidget,
+                 black_clock: ClockWidget,
+                 white_engine_path: Optional[str] = None,
+                 black_engine_path: Optional[str] = None,
+                 time_control_seconds: int = 600,
+                 increment_seconds: int = 0):
+        super().__init__()
+        self.board_widget = board_widget
+        self.move_list = move_list
+        self.white_clock = white_clock
+        self.black_clock = black_clock
+        self.time_control = time_control_seconds
+        self.increment = increment_seconds
+
+        self.state = GameState()
+        self.selected_square = None
+        self.current_legal_moves: List[Move] = []
+        self.fpgn_writer: Optional[FPGNWriter] = None
+        self.game_active = False
+        self.engine_thinking = False
+        self.review_mode = False   # True when viewing a loaded game
+
+        # Clocks setup
+        self.white_clock.set_time(time_control_seconds, increment_seconds)
+        self.black_clock.set_time(time_control_seconds, increment_seconds)
+
+        # Engine setup
+        self.white_engine: Optional[EngineManager] = None
+        self.black_engine: Optional[EngineManager] = None
+        if white_engine_path:
+            self.white_engine = EngineManager(white_engine_path)
+            self.white_engine.bestmove_received.connect(self._on_engine_bestmove)
+            self.white_engine.info_received.connect(self._on_engine_info)
+            self.white_engine.error_occurred.connect(self._on_engine_error)
+        if black_engine_path:
+            self.black_engine = EngineManager(black_engine_path)
+            self.black_engine.bestmove_received.connect(self._on_engine_bestmove)
+            self.black_engine.info_received.connect(self._on_engine_info)
+            self.black_engine.error_occurred.connect(self._on_engine_error)
+
+        # Connect UI signals
+        self.board_widget.square_clicked.connect(self._on_square_clicked)
+        self.move_list.move_selected.connect(self._goto_ply)
+        self.white_clock.timeout.connect(self._on_timeout)
+        self.black_clock.timeout.connect(self._on_timeout)
+
+        # Move history
+        self.move_history: List[Move] = []
+
+    # -----------------------------------------------------------------
+    # Game lifecycle
+    # -----------------------------------------------------------------
+    def start_new_game(self):
+        self._stop_engines()
+        self.state = GameState()
+        self.selected_square = None
+        self.current_legal_moves = []
+        self.move_history.clear()
+        self.move_list.clear_moves()
+        self.white_clock.reset()
+        self.black_clock.reset()
+        self.white_clock.set_time(self.time_control, self.increment)
+        self.black_clock.set_time(self.time_control, self.increment)
+        self.board_widget.set_board(self.state.board)
+        self.board_widget.set_selected(None, [])
+        self.board_widget.set_last_move(None)
+        self._init_recording()
+        self.game_active = True
+        self.review_mode = False
+        self.engine_thinking = False
+        self._start_engines()
+        self._start_turn()
+        self.position_changed.emit()
+        self.status_update.emit("White's turn")
+
+    def _stop_engines(self):
+        if self.white_engine: self.white_engine.stop()
+        if self.black_engine: self.black_engine.stop()
+
+    def _start_engines(self):
+        if self.white_engine: self.white_engine.start()
+        if self.black_engine: self.black_engine.start()
+
+    def _init_recording(self):
+        os.makedirs("games", exist_ok=True)
+        filename = f"games/{datetime.now().strftime('%Y%m%d_%H%M%S')}.fpgn"
+        self.fpgn_writer = FPGNWriter(filename, {
+            "Event": "Casual Game",
+            "Site": "Local",
+            "Date": datetime.now().strftime("%Y.%m.%d"),
+            "Round": "?",
+            "White": "Player" if not self.white_engine else "Engine White",
+            "Black": "Player" if not self.black_engine else "Engine Black",
+            "Variant": "Fusion"
+        })
+
+    # -----------------------------------------------------------------
+    # Turn management
+    # -----------------------------------------------------------------
+    def _current_engine(self) -> Optional[EngineManager]:
+        return self.white_engine if self.state.turn == Colour.WHITE else self.black_engine
+
+    def _start_turn(self):
+        if not self.game_active:
+            return
+        result = game_result(self.state)
+        if result is not None:
+            self._handle_game_end(result)
+            return
+
+        if not self.review_mode:
+            if self.state.turn == Colour.WHITE:
+                self.white_clock.start()
+                self.black_clock.stop()
+            else:
+                self.black_clock.start()
+                self.white_clock.stop()
+
+        engine = self._current_engine()
+        if engine and not self.engine_thinking and not self.review_mode:
+            engine.send_position(self.move_history)
+            engine.send_go(movetime=10000)   # 10s per move – could be made configurable
+            self.engine_thinking = True
+            self.status_update.emit("Engine thinking...")
+        else:
+            self.status_update.emit(f"{'White' if self.state.turn == Colour.WHITE else 'Black'}'s turn")
+
+    def _stop_turn(self):
+        if self.state.turn == Colour.WHITE:
+            self.white_clock.stop()
+        else:
+            self.black_clock.stop()
+
+    # -----------------------------------------------------------------
+    # Human move handling
+    # -----------------------------------------------------------------
+    def _on_square_clicked(self, row: int, col: int):
+        if not self.game_active or self.engine_thinking or self.review_mode:
+            return
+        if self._current_engine() is not None:
+            return   # engine's turn
+        if self.selected_square is None:
+            piece = self.state.board.get_piece(row, col)
+            if piece and piece.colour == self.state.turn:
+                self.selected_square = (row, col)
+                all_legal = legal_moves(self.state.board, self.state.turn)
+                self.current_legal_moves = [m for m in all_legal if m.from_r == row and m.from_c == col]
+                dests = [(m.to_r, m.to_c) for m in self.current_legal_moves]
+                self.board_widget.set_selected((row, col), dests)
+                self.status_update.emit(f"Selected {piece.symbol()}")
+        else:
+            src_r, src_c = self.selected_square
+            for move in self.current_legal_moves:
+                if move.to_r == row and move.to_c == col:
+                    final_move = self._handle_promotion(move)
+                    if final_move is None:
+                        return
+                    self._execute_move(final_move)
+                    return
+            # Reselect or deselect
+            piece = self.state.board.get_piece(row, col)
+            if piece and piece.colour == self.state.turn:
+                self.selected_square = (row, col)
+                all_legal = legal_moves(self.state.board, self.state.turn)
+                self.current_legal_moves = [m for m in all_legal if m.from_r == row and m.from_c == col]
+                dests = [(m.to_r, m.to_c) for m in self.current_legal_moves]
+                self.board_widget.set_selected((row, col), dests)
+            else:
+                self.selected_square = None
+                self.current_legal_moves = []
+                self.board_widget.set_selected(None, [])
+
+    def _handle_promotion(self, move: Move) -> Optional[Move]:
+        piece = self.state.board.get_piece(move.from_r, move.from_c)
+        if piece.ptype not in PROMOTABLE_TYPES:
+            return move
+        in_zone = _is_promotion_zone(move.to_r, piece.colour)
+        if not in_zone:
+            return move
+
+        forced = False
+        if move.promotion is None:
+            temp_board = self.state.board.copy()
+            self._apply_move_to_board(temp_board, move)
+            if not _piece_can_move_from(temp_board, move.to_r, move.to_c, piece.ptype, piece.colour):
+                forced = True
+
+        dlg = PromotionDialog(piece.ptype, piece.colour, forced)
+        if forced and piece.ptype != PieceType.PAWN:
+            # Auto-promote for non-pawn pieces
+            target = PROMOTION_TARGETS[piece.ptype][0]
+            return Move(move.from_r, move.from_c, move.to_r, move.to_c, target)
+        if forced:
+            if dlg.exec() == QDialog.Accepted and dlg.chosen_piece:
+                return Move(move.from_r, move.from_c, move.to_r, move.to_c, dlg.chosen_piece)
+            return None   # should not happen
+        else:
+            if dlg.exec() == QDialog.Accepted and dlg.chosen_piece:
+                return Move(move.from_r, move.from_c, move.to_r, move.to_c, dlg.chosen_piece)
+            return Move(move.from_r, move.from_c, move.to_r, move.to_c)  # decline promotion
+
+    # -----------------------------------------------------------------
+    # Execute move
+    # -----------------------------------------------------------------
+    def _execute_move(self, move: Move):
+        piece = self.state.board.get_piece(move.from_r, move.from_c)
+        move_str = move_to_fpgn(move, piece.ptype)
+        if self.fpgn_writer and not self.review_mode:
+            self.fpgn_writer.add_move(move, piece.ptype)
+
+        self.state.make_move(move)
+        self.move_history.append(move)
+        self.move_list.add_move(move_str, piece.colour == Colour.WHITE)
+
+        self.board_widget.set_board(self.state.board)
+        self.board_widget.set_last_move((move.from_r, move.from_c, move.to_r, move.to_c))
+        self.selected_square = None
+        self.current_legal_moves = []
+        self.board_widget.set_selected(None, [])
+        self.position_changed.emit()
+        self.move_made.emit()
+
+        # Apply increment
+        if not self.review_mode:
+            if piece.colour == Colour.WHITE:
+                self.white_clock.add_increment()
+            else:
+                self.black_clock.add_increment()
+
+        self._stop_turn()
+        result = game_result(self.state)
+        if result is not None:
+            self._handle_game_end(result)
+        else:
+            self._start_turn()
+
+    @staticmethod
+    def _apply_move_to_board(board: Board, move: Move):
+        piece = board.get_piece(move.from_r, move.from_c)
+        board.clear_square(move.from_r, move.from_c)
+        if move.promotion:
+            piece = Piece(move.promotion, piece.colour)
+        board.set_piece(move.to_r, move.to_c, piece)
+
+    # -----------------------------------------------------------------
+    # Engine move handling
+    # -----------------------------------------------------------------
+    def _on_engine_bestmove(self, uci_str: str):
+        if not self.engine_thinking:
+            return
+        self.engine_thinking = False
+        if uci_str == "0000":
+            self._handle_engine_resign()
+            return
+        move = uci_to_move(uci_str)
+        if move is None:
+            self._handle_engine_illegal_move("Invalid move format")
+            return
+        legal = legal_moves(self.state.board, self.state.turn)
+        valid = any(m.from_r == move.from_r and m.from_c == move.from_c and
+                    m.to_r == move.to_r and m.to_c == move.to_c and
+                    m.promotion == move.promotion for m in legal)
+        if not valid:
+            self._handle_engine_illegal_move(f"Illegal move: {uci_str}")
+            return
+        self._execute_move(move)
+
+    def _on_engine_info(self, info: dict): pass
+    def _on_engine_error(self, err_msg: str):
+        self.status_update.emit(f"Engine error: {err_msg}")
+
+    def _handle_engine_resign(self):
+        self._end_game(self.state.turn.opponent(), "resignation")
+    def _handle_engine_illegal_move(self, reason: str):
+        self._end_game(self.state.turn.opponent(), "illegal move")
+
+    # -----------------------------------------------------------------
+    # Game end
+    # -----------------------------------------------------------------
+    def _handle_game_end(self, result):
+        if result[0] == 'draw':
+            score_diff = result[1]
+            if score_diff > 0:
+                winner, win_desc, fpgn_result = Colour.WHITE, "White wins on tiebreak", "1-0"
+            elif score_diff < 0:
+                winner, win_desc, fpgn_result = Colour.BLACK, "Black wins on tiebreak", "0-1"
+            else:
+                self._tiebreak_new_game()
+                return
+        else:
+            winner_str = result[0]
+            if winner_str == 'white':
+                winner, win_desc, fpgn_result = Colour.WHITE, "White wins", "1-0"
+            else:
+                winner, win_desc, fpgn_result = Colour.BLACK, "Black wins", "0-1"
+        self._end_game(winner, win_desc)
+        if self.fpgn_writer:
+            self.fpgn_writer.add_result(fpgn_result)
+            self.fpgn_writer.close()
+
+    def _end_game(self, winner: Colour, reason: str):
+        self.white_clock.stop()
+        self.black_clock.stop()
+        self.game_active = False
+        self.game_ended.emit(reason)
+
+    def _tiebreak_new_game(self):
+        # Swap engines and restart
+        self.white_engine, self.black_engine = self.black_engine, self.white_engine
+        if self.fpgn_writer:
+            self.fpgn_writer.add_result("1/2-1/2")
+            self.fpgn_writer.close()
+        self.start_new_game()
+
+    def _on_timeout(self):
+        if self.white_clock.time_left_ms == 0:
+            self._end_game(Colour.BLACK, "White timeout")
+        elif self.black_clock.time_left_ms == 0:
+            self._end_game(Colour.WHITE, "Black timeout")
+
+    # -----------------------------------------------------------------
+    # Navigation
+    # -----------------------------------------------------------------
+    def _goto_ply(self, ply: int):
+        if ply < 0 or ply >= len(self.move_history):
+            return
+        self.state = GameState()
+        self.board_widget.set_board(self.state.board)
+        self.board_widget.set_last_move(None)
+        for i in range(ply + 1):
+            move = self.move_history[i]
+            self.state.make_move(move)
+            if i == ply:
+                self.board_widget.set_last_move((move.from_r, move.from_c, move.to_r, move.to_c))
+        self.board_widget.set_board(self.state.board)
+        self.move_list.set_current_ply(ply)
+        self.position_changed.emit()
+        self.white_clock.stop()
+        self.black_clock.stop()
+
+    def get_legal_moves(self) -> List[Move]:
+        return legal_moves(self.state.board, self.state.turn)
+
+    # -----------------------------------------------------------------
+    # FPGN loading
+    # -----------------------------------------------------------------
+    def load_game_from_fpgn(self, file_path: str, game_index: int = 0):
+        games = FPGNReader.read_file(file_path)
+        if not games or game_index >= len(games):
+            self.status_update.emit("No valid game found.")
+            return
+        headers, moves = games[game_index]
+        self._stop_engines()
+        self.state = GameState()
+        self.move_history.clear()
+        self.move_list.clear_moves()
+        self.white_clock.stop()
+        self.black_clock.stop()
+        self.game_active = False
+        self.review_mode = True
+        self.engine_thinking = False
+        self.selected_square = None
+        self.current_legal_moves = []
+
+        self.board_widget.set_board(self.state.board)
+        self.board_widget.set_last_move(None)
+        for move in moves:
+            piece = self.state.board.get_piece(move.from_r, move.from_c)
+            if piece is None:
+                continue
+            self.state.make_move(move)
+            self.move_history.append(move)
+            move_str = move_to_fpgn(move, piece.ptype)
+            self.move_list.add_move(move_str, piece.colour == Colour.WHITE)
+        self.board_widget.set_board(self.state.board)
+        if self.move_history:
+            last = self.move_history[-1]
+            self.board_widget.set_last_move((last.from_r, last.from_c, last.to_r, last.to_c))
+        self.position_changed.emit()
+        self.status_update.emit(f"Loaded game from {file_path} in review mode.")
