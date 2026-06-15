@@ -1,40 +1,79 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QDockWidget, QMenuBar, QStatusBar, QLabel, QAction,
-    QMessageBox, QFileDialog, QInputDialog
+    QDockWidget, QMenuBar, QStatusBar, QLabel,
+    QMessageBox, QFileDialog, QInputDialog,
+    QSystemTrayIcon, QMenu
 )
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtCore import Qt
 from typing import Optional
 
-from chog.ui.board_widget import BoardWidget
-from chog.ui.move_list import MoveListWidget
-from chog.ui.clock_widget import ClockWidget
-from chog.ui.analysis_panel import AnalysisPanel
-from chog.ui.match_dialog import MatchSetupDialog
-from chog.ui.book_editor import BookEditorWidget
-from chog.ui.training_dialog import TrainingDialog
-from chog.game_controller import GameController
-from chog.engine.match_manager import EngineMatchManager
-from chog.io.fen import board_to_fen
-from chog.io.fpgn import FPGNReader
+from src.ui.board_widget import BoardWidget
+from src.ui.move_list import MoveListWidget
+from src.ui.clock_widget import ClockWidget
+from src.ui.analysis_panel import AnalysisPanel
+from src.ui.analysis_graph import AnalysisGraph
+from src.ui.match_dialog import MatchSetupDialog
+from src.ui.book_editor import BookEditorWidget
+from src.ui.training_dialog import TrainingDialog
+from src.ui.engine_config_dialog import EngineConfigDialog
+from src.ui.game_database_widget import GameDatabaseWidget
+from src.ui.config_dialog import ConfigDialog
+from src.ui.dynamic_toolbar import DynamicToolbar
+from src.game_controller import GameController
+from src.engine.match_manager import EngineMatchManager
+from src.engine.batch_analysis import BatchAnalysis
+from src.core.game_state import GameState
+from src.io.fen import board_to_fen
+from src.io.fpgn import FPGNReader
+from src.ui.sound_manager import SoundManager
+from src.ui.messages import WaitingOverlay, info_message, error_message, question_dialog, temporary_message
+from src.ui.navigation_toolbar import NavigationToolbar
+from src.ui.menus.base_menu import Option, SubMenu
+from src.ui.menus.app_menus import (
+    FileMenu, ViewMenu, ReviewMenu, EngineMenu,
+    AnalysisMenu, MatchMenu, BookMenu, TrainingMenu, HelpMenu
+)
+from src.ui.menus.tools_menu import ToolsMenu
+from src.ui.shortcuts_manager import ShortcutsManager, ShortcutsDialog
+from src.ui import icons
 
 
 class MainWindow(QMainWindow):
     def __init__(self, white_engine_path: Optional[str] = None,
                  black_engine_path: Optional[str] = None):
         super().__init__()
-        self.setWindowTitle("Fusion Chess")
+        self.setWindowTitle("Chog – Universal Chess‑Shogi Hybrid")
         self.resize(1200, 900)
+
+        # ---- Sound manager ----
+        self.sound_manager = SoundManager("sounds")
+
+        # ---- Shortcuts manager ----
+        self.shortcuts_manager = ShortcutsManager()
 
         # ---- Central board ----
         self.board_widget = BoardWidget()
         self.setCentralWidget(self.board_widget)
 
-        # ---- Move list dock (right) ----
+        # ---- Navigation toolbar + Move list dock (right) ----
+        self.nav_toolbar = NavigationToolbar()
         self.move_list = MoveListWidget()
+
+        move_container = QWidget()
+        move_layout = QVBoxLayout(move_container)
+        move_layout.addWidget(self.nav_toolbar)
+        move_layout.addWidget(self.move_list)
         move_dock = QDockWidget("Moves", self)
-        move_dock.setWidget(self.move_list)
+        move_dock.setWidget(move_container)
         self.addDockWidget(Qt.RightDockWidgetArea, move_dock)
+
+        self.nav_toolbar.go_start.connect(lambda: self.controller._goto_ply(0))
+        self.nav_toolbar.go_back.connect(self._nav_go_back)
+        self.nav_toolbar.go_forward.connect(self._nav_go_forward)
+        self.nav_toolbar.go_end.connect(
+            lambda: self.controller._goto_ply(len(self.controller.move_history) - 1)
+        )
 
         # ---- Clock dock (bottom) ----
         self.white_clock = ClockWidget()
@@ -55,11 +94,30 @@ class MainWindow(QMainWindow):
         analysis_dock.setWidget(self.analysis_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, analysis_dock)
 
+        self.analysis_panel.arrows_changed.connect(self.board_widget.set_arrows)
+        self.analysis_panel.markers_changed.connect(self.board_widget.set_markers)
+
+        # ---- Analysis graph dock (bottom) ----
+        self.analysis_graph = AnalysisGraph()
+        graph_dock = QDockWidget("Eval Graph", self)
+        graph_dock.setWidget(self.analysis_graph)
+        self.addDockWidget(Qt.BottomDockWidgetArea, graph_dock)
+
         # ---- Opening Book dock (right) ----
         self.book_editor = BookEditorWidget()
         book_dock = QDockWidget("Opening Book", self)
         book_dock.setWidget(self.book_editor)
         self.addDockWidget(Qt.RightDockWidgetArea, book_dock)
+
+        # ---- Game Database dock (right) ----
+        self.game_database = GameDatabaseWidget()
+        db_dock = QDockWidget("Game Database", self)
+        db_dock.setWidget(self.game_database)
+        self.addDockWidget(Qt.RightDockWidgetArea, db_dock)
+
+        # ---- Dynamic toolbar (top) ----
+        self.dynamic_toolbar = DynamicToolbar(self)
+        self.addToolBar(Qt.TopToolBarArea, self.dynamic_toolbar)
 
         # ---- Status bar ----
         self.status_bar = QStatusBar()
@@ -67,57 +125,183 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Ready")
         self.status_bar.addWidget(self.status_label)
 
-        # ---- Game controller ----
+        # ---- Game controller (animation enabled) ----
         self.controller = GameController(
             self.board_widget, self.move_list,
             self.white_clock, self.black_clock,
             white_engine_path, black_engine_path,
-            time_control_seconds=600, increment_seconds=2
+            time_control_seconds=600, increment_seconds=2,
+            animation_enabled=True,
+            sound_manager=self.sound_manager
         )
         self.controller.status_update.connect(self.status_label.setText)
         self.controller.game_ended.connect(self._on_game_ended)
         self.controller.position_changed.connect(self._on_position_changed)
-
-        # ---- Menus ----
-        self._create_menus()
+        self.controller.game_mode_changed.connect(self._update_toolbar)
 
         # ---- Match manager (on demand) ----
         self.match_manager: Optional[EngineMatchManager] = None
+        self.batch_analysis: Optional[BatchAnalysis] = None
 
-        # ---- Start first game ----
+        self.game_database.game_load_requested.connect(self.controller.load_game_from_fpgn)
+
+        # ---- Tray icon (F12) ----
+        self.tray_icon = None
+
+        # ---- Menus (structured framework) ----
+        self._create_menus()
+
+        # ---- Shrink window after layout completes ----
+        for dock in (move_dock, clock_dock, analysis_dock, graph_dock, book_dock, db_dock):
+            dock.topLevelChanged.connect(lambda floating: self.shrink())
+
         self.controller.start_new_game()
 
+    def shrink(self):
+        self.resize(self.minimumSizeHint())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.shrink()
+
+    def _nav_go_back(self):
+        history = self.controller.move_history
+        if not history:
+            return
+        current_ply = len(history) - 1
+        if current_ply > 0:
+            self.controller._goto_ply(current_ply - 1)
+
+    def _nav_go_forward(self):
+        history = self.controller.move_history
+        if not history:
+            return
+        current_ply = len(history) - 1
+        if current_ply < len(history) - 1:
+            self.controller._goto_ply(current_ply + 1)
+
+    def _update_toolbar(self, mode: str):
+        if mode == "playing":
+            actions = [
+                ("new_game", "New Game", icons.icon_new_game(), self.controller.start_new_game),
+                ("flip", "Flip", icons.icon_flip_board(), self.board_widget.flip_board),
+            ]
+        else:
+            actions = [
+                ("prev_game", "Previous", icons.icon_prev_game(), self.controller.previous_game),
+                ("next_game", "Next", icons.icon_next_game(), self.controller.next_game),
+                ("takeback", "Takeback", icons.icon_exit(), lambda: self.controller.takeback()),
+            ]
+        self.dynamic_toolbar.set_actions(actions)
+
+    # ---- Menu creation ----
     def _create_menus(self):
-        menu = self.menuBar()
+        self.menu_instances = [
+            FileMenu(self),
+            ViewMenu(self),
+            ReviewMenu(self),
+            EngineMenu(self),
+            AnalysisMenu(self),
+            MatchMenu(self),
+            BookMenu(self),
+            TrainingMenu(self),
+            ToolsMenu(self),
+            HelpMenu(self),
+        ]
+        self._all_menu_actions = {}
+        for menu in self.menu_instances:
+            menu.build()
+            qmenu = self.menuBar().addMenu(menu.title)
+            self._populate_qmenu(qmenu, menu.children)
 
-        # File
-        file_menu = menu.addMenu("&File")
-        file_menu.addAction("&New Game", self.controller.start_new_game, "Ctrl+N")
-        file_menu.addAction("&Load Game...", self._load_game)
-        file_menu.addSeparator()
-        file_menu.addAction("E&xit", self.close, "Ctrl+Q")
+        # Options menu
+        options_menu = self.menuBar().addMenu("&Options")
+        config_action = QAction(icons.icon_engine_config(), "General Configuration...", self)
+        config_action.triggered.connect(self._open_config_dialog)
+        options_menu.addAction(config_action)
 
-        # Analysis
-        analysis_menu = menu.addMenu("&Analysis")
-        analysis_menu.addAction("Set Analysis Engine...", self._set_analysis_engine)
+        # Apply shortcuts from manager
+        for (key, _), action in self._all_menu_actions.items():
+            shortcut = self.shortcuts_manager.get(key)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
 
-        # Match
-        match_menu = menu.addMenu("&Match")
-        match_menu.addAction("New Engine Match...", self._start_match)
-        match_menu.addAction("Stop Match", self._stop_match)
+        self.prev_game_action = self._find_action("prev_game")
+        self.next_game_action = self._find_action("next_game")
 
-        # Book
-        book_menu = menu.addMenu("&Book")
-        book_menu.addAction("Load Book...", self._load_book)
-        book_menu.addAction("Save Book As...", self._save_book)
+    def _find_action(self, key: str) -> QAction:
+        for (k, _), act in self._all_menu_actions.items():
+            if k == key:
+                return act
+        return QAction(self)
 
-        # Training
-        training_menu = menu.addMenu("&Training")
-        training_menu.addAction("New Training Session...", self._start_training)
+    def _populate_qmenu(self, qmenu, items):
+        for item in items:
+            if isinstance(item, SubMenu):
+                sub_qmenu = qmenu.addMenu(item.label)
+                if item.icon:
+                    sub_qmenu.setIcon(item.icon)
+                sub_qmenu.setEnabled(item.enabled)
+                self._populate_qmenu(sub_qmenu, item.children)
+            elif isinstance(item, Option):
+                if item.separator_before:
+                    qmenu.addSeparator()
+                action = QAction(item.label, self)
+                if item.icon:
+                    action.setIcon(item.icon)
+                if item.shortcut:
+                    action.setShortcut(item.shortcut)
+                action.setEnabled(item.enabled)
+                action.setCheckable(item.checkable)
+                action.setChecked(item.checked)
+                action.triggered.connect(lambda checked, opt=item: opt.menu.execute(opt.key))
+                qmenu.addAction(action)
+                self._all_menu_actions[(item.key, id(action))] = action
 
-        # Help
-        help_menu = menu.addMenu("&Help")
-        help_menu.addAction("About Fusion Chess", self._about)
+    # ---- Tray icon ----
+    def toggle_tray_icon(self):
+        if not self.tray_icon:
+            restore_action = QAction("Show", self)
+            restore_action.triggered.connect(self.restore_from_tray)
+            quit_action = QAction("Quit", self)
+            quit_action.triggered.connect(self.close)
+            tray_menu = QMenu(self)
+            tray_menu.addAction(restore_action)
+            tray_menu.addSeparator()
+            tray_menu.addAction(quit_action)
+
+            self.tray_icon = QSystemTrayIcon(self)
+            self.tray_icon.setContextMenu(tray_menu)
+            self.tray_icon.setIcon(self.windowIcon())
+            self.tray_icon.activated.connect(self.on_tray_activated)
+
+        if self.tray_icon.isVisible():
+            self.tray_icon.hide()
+        else:
+            self.tray_icon.show()
+            self.hide()
+
+    def restore_from_tray(self):
+        self.tray_icon.hide()
+        self.showNormal()
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.restore_from_tray()
+
+    # ---- Config dialog ----
+    def _open_config_dialog(self):
+        dlg = ConfigDialog(self)
+        if dlg.exec():
+            temporary_message(self, "Settings saved. Some changes may require restart.", 2500)
+
+    # ---- Shortcuts dialog ----
+    def _open_shortcuts_dialog(self):
+        dlg = ShortcutsDialog(self.shortcuts_manager, self)
+        if dlg.exec():
+            for (key, _), action in self._all_menu_actions.items():
+                shortcut = self.shortcuts_manager.get(key)
+                action.setShortcut(QKeySequence(shortcut) if shortcut else QKeySequence())
 
     # -----------------------------------------------------------------
     # Slots
@@ -128,43 +312,80 @@ class MainWindow(QMainWindow):
                            self.controller.state.fullmove_number)
         self.analysis_panel.set_position(fen)
         legal_moves = self.controller.get_legal_moves()
-        self.book_editor.set_position(self.controller.state, legal_moves)
+        move_history = self.controller.move_history
+        self.book_editor.set_position(self.controller.state, legal_moves, move_history)
 
     def _on_game_ended(self, message: str):
-        QMessageBox.information(self, "Game Over", message)
+        info_message(self, "Game Over", message)
         self.controller.start_new_game()
+
+    def _open_engine_config(self):
+        dlg = EngineConfigDialog(self)
+        if dlg.exec():
+            temporary_message(self, "Engine configuration saved.")
 
     def _set_analysis_engine(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Analysis Engine", "",
                                               "Executable Files (*);;All Files (*)")
         if path:
-            self.analysis_panel.set_engine(path)
+            self.analysis_panel.set_engine_path(path)
+            self.game_database.set_engine_path(path)
             self.status_label.setText(f"Analysis engine set: {path}")
+            self.book_editor.set_engine_path(path)
+            temporary_message(self, "Analysis engine set.", 1500)
 
     def _load_game(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open FPGN File", "games/",
                                               "FPGN Files (*.fpgn);;All Files (*)")
         if not path:
             return
+        self.controller.load_games_from_fpgn(path)
+        self._update_game_navigation_buttons()
+
+    def _update_game_navigation_buttons(self):
+        has_games = len(self.controller.loaded_games) > 1
+        if self.prev_game_action:
+            self.prev_game_action.setEnabled(has_games and self.controller.current_game_index > 0)
+        if self.next_game_action:
+            self.next_game_action.setEnabled(has_games and self.controller.current_game_index < len(self.controller.loaded_games) - 1)
+
+    def _batch_analyze_game(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open FPGN File", "games/",
+                                              "FPGN Files (*.fpgn);;All Files (*)")
+        if not path:
+            return
         games = FPGNReader.read_file(path)
         if not games:
-            QMessageBox.information(self, "Load Game", "No games found in file.")
+            error_message(self, "Error", "No games found in file.")
             return
-        if len(games) == 1:
-            self.controller.load_game_from_fpgn(path, 0)
-        else:
-            items = [f"Game {i+1}: {h.get('White','?')} vs {h.get('Black','?')}" for i, (h,_) in enumerate(games)]
-            item, ok = QInputDialog.getItem(self, "Select Game", "Choose game:", items, 0, False)
-            if ok:
-                index = items.index(item)
-                self.controller.load_game_from_fpgn(path, index)
+        headers, moves = games[0]
+        state = GameState()
+        move_history = moves
+
+        engine_path = self.analysis_panel.engine.path_exe if self.analysis_panel.engine else None
+        if not engine_path:
+            engine_path, _ = QFileDialog.getOpenFileName(self, "Select Engine for Batch Analysis", "",
+                                                         "Executable Files (*);;All Files (*)")
+            if not engine_path:
+                error_message(self, "No Engine", "An engine is required for batch analysis.")
+                return
+
+        movetime, ok = QInputDialog.getInt(self, "Move Time", "Milliseconds per move:", 5000, 100, 60000, 100)
+        if not ok:
+            return
+
+        self.batch_analysis = BatchAnalysis(engine_path, movetime)
+        self.batch_analysis.progress.connect(lambda cur, tot: self.status_label.setText(f"Analyzing move {cur}/{tot}"))
+        self.batch_analysis.analysis_complete.connect(
+            lambda: info_message(self, "Done", "Batch analysis complete."))
+        self.batch_analysis.analyze_game(state, move_history)
 
     def _start_match(self):
         dlg = MatchSetupDialog(self)
         if dlg.exec() == MatchSetupDialog.Accepted:
             settings = dlg.get_settings()
             if not settings["engine1"] or not settings["engine2"]:
-                QMessageBox.warning(self, "Missing Engine", "Both paths are required.")
+                error_message(self, "Missing Engine", "Both paths are required.")
                 return
             self.match_manager = EngineMatchManager(
                 settings["engine1"], settings["engine2"],
@@ -183,7 +404,7 @@ class MainWindow(QMainWindow):
     def _on_match_finished(self, results):
         if self.match_manager:
             summary = self.match_manager.get_match_summary()
-            QMessageBox.information(self, "Match Finished", summary)
+            info_message(self, "Match Finished", summary)
             self.match_manager = None
 
     def _load_book(self):
@@ -197,6 +418,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _about(self):
-        QMessageBox.about(self, "About Fusion Chess",
-                          "Fusion Chess – A hybrid of Chess and Shogi.\n"
-                          "10x10 board, custom pieces, pure strategy.")
+        info_message(self, "About Chog",
+                     "Chog – A Universal Chess‑Shogi Hybrid.\n"
+                     "10x10 board, custom pieces, pure strategy.\n"
+                     "Powered by CUEP (Chog Universal Engine Protocol).")

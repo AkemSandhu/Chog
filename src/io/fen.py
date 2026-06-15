@@ -1,12 +1,10 @@
-# io/fen.py
 from typing import Tuple
-from pieces import Colour, PieceType, Piece, PIECE_SYMBOLS
-from board import Board, ROWS, COLS
+from src.core.pieces import Colour, PieceType, Piece, PIECE_SYMBOLS
+from src.core.board import Board, ROWS, COLS
 
 def board_to_fen(board: Board, turn: Colour, halfmove: int = 0, fullmove: int = 1) -> str:
-    """Convert a board position to FEN string."""
     rows = []
-    for r in range(ROWS - 1, -1, -1):  # from row 9 down to 0
+    for r in range(ROWS - 1, -1, -1):
         empty = 0
         row_str = ""
         for c in range(COLS):
@@ -17,18 +15,15 @@ def board_to_fen(board: Board, turn: Colour, halfmove: int = 0, fullmove: int = 
                 if empty > 0:
                     row_str += str(empty)
                     empty = 0
-                row_str += piece.symbol()  # uppercase white, lowercase black
+                row_str += piece.symbol()
         if empty > 0:
             row_str += str(empty)
         rows.append(row_str)
     piece_placement = "/".join(rows)
     active = "w" if turn == Colour.WHITE else "b"
-    # No castling or en passant in this variant
     return f"{piece_placement} {active} - - {halfmove} {fullmove}"
 
-
 def fen_to_board(fen: str) -> Tuple[Board, Colour, int, int]:
-    """Parse a FEN string and return (Board, turn, halfmove, fullmove)."""
     parts = fen.strip().split()
     if len(parts) < 6:
         raise ValueError("FEN string must have 6 fields")
@@ -40,19 +35,7 @@ def fen_to_board(fen: str) -> Tuple[Board, Colour, int, int]:
         raise ValueError(f"FEN must have exactly {ROWS} ranks")
 
     for rank_idx, rank_str in enumerate(ranks):
-        row = ROWS - 1 - rank_idx  # rank 9 first in FEN, row 9 in board
-        col = 0
-        for ch in rank_str:
-            if ch.isdigit():
-                # could be multi‑digit number like "10"
-                # We'll parse the whole number by collecting consecutive digits
-                # But we're iterating char by char; easier: use a regex or just step through.
-                # Since we iterate per character, a number like "10" would be split into '1' then '0'.
-                # To handle this, we'll rebuild the number from consecutive digits.
-                # We'll implement by collecting digits.
-                pass  # will be handled below
-        # Proper parsing: handle multi‑digit empties
-        # We'll use a loop with a separate function.
+        row = ROWS - 1 - rank_idx
         col = 0
         num_buf = ""
         for ch in rank_str:
@@ -60,11 +43,8 @@ def fen_to_board(fen: str) -> Tuple[Board, Colour, int, int]:
                 num_buf += ch
             else:
                 if num_buf:
-                    empty = int(num_buf)
-                    col += empty
+                    col += int(num_buf)
                     num_buf = ""
-                # piece symbol
-                # Determine colour: uppercase white, lowercase black
                 is_white = ch.isupper()
                 symbol = ch.upper()
                 ptype = None

@@ -1,28 +1,34 @@
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QDialog
-from typing import Optional, List, Tuple
+from PySide6.QtWidgets import QDialog, QMessageBox
+from typing import Optional, List, Tuple, Dict
 from datetime import datetime
 import os
 
-from chog.core.board import Board
-from chog.core.pieces import Colour, PieceType, Piece, PIECE_SYMBOLS, PROMOTABLE_TYPES, PROMOTION_TARGETS
-from chog.core.movegen import Move, legal_moves
-from chog.core.game_state import GameState, game_result
-from chog.core.rules import _is_promotion_zone, _piece_can_move_from, material_score
-from chog.io.fpgn import FPGNWriter, move_to_fpgn, FPGNReader
-from chog.engine.manager import EngineManager
-from chog.engine.protocol import uci_to_move
-from chog.ui.board_widget import BoardWidget
-from chog.ui.move_list import MoveListWidget
-from chog.ui.clock_widget import ClockWidget
-from chog.ui.promotion_dialog import PromotionDialog
+from src.core.board import Board
+from src.core.pieces import Colour, PieceType, Piece, PIECE_SYMBOLS, PROMOTABLE_TYPES, PROMOTION_TARGETS
+from src.core.movegen import Move
+from src.core.rules import legal_moves, _is_promotion_zone, _piece_can_move_from, material_score
+from src.core.game_state import GameState, game_result
+from src.core.variations import MoveNode
+from src.io.fpgn import FPGNWriter, move_to_fpgn, FPGNReader
+from src.engine.manager import EngineManager
+from src.engine.protocol import uci_to_move
+from src.engine.multi_response import MultiEngineResponse, EngineResponse
+from src.core.analysis_db import AnalysisDB
+from src.ui.board_widget import BoardWidget, BoardArrow, BoardMarker
+from src.ui.move_list import MoveListWidget
+from src.ui.clock_widget import ClockWidget
+from src.ui.promotion_dialog import PromotionDialog
+from src.ui.sound_manager import SoundManager
 
 
 class GameController(QObject):
     move_made = Signal()
-    game_ended = Signal(str)            # result description
-    status_update = Signal(str)         # status bar message
-    position_changed = Signal()         # emitted whenever board/state changes
+    game_ended = Signal(str)
+    status_update = Signal(str)
+    position_changed = Signal()
+    variations_changed = Signal()
+    game_mode_changed = Signal(str)   # 'playing' or 'review'
 
     def __init__(self,
                  board_widget: BoardWidget,
@@ -32,7 +38,9 @@ class GameController(QObject):
                  white_engine_path: Optional[str] = None,
                  black_engine_path: Optional[str] = None,
                  time_control_seconds: int = 600,
-                 increment_seconds: int = 0):
+                 increment_seconds: int = 0,
+                 animation_enabled: bool = True,
+                 sound_manager: Optional[SoundManager] = None):
         super().__init__()
         self.board_widget = board_widget
         self.move_list = move_list
@@ -40,6 +48,8 @@ class GameController(QObject):
         self.black_clock = black_clock
         self.time_control = time_control_seconds
         self.increment = increment_seconds
+        self.animation_enabled = animation_enabled
+        self.sound_manager = sound_manager
 
         self.state = GameState()
         self.selected_square = None
@@ -47,7 +57,16 @@ class GameController(QObject):
         self.fpgn_writer: Optional[FPGNWriter] = None
         self.game_active = False
         self.engine_thinking = False
-        self.review_mode = False   # True when viewing a loaded game
+        self.review_mode = False
+
+        # Variation tree
+        self.root = MoveNode(None, None)
+        self.current_node = self.root
+        self.move_history: List[Move] = []
+        self.comments: List[str] = []
+
+        # Analysis database
+        self.analysis_db = AnalysisDB(os.path.join("config", "analysis.db"))
 
         # Clocks setup
         self.white_clock.set_time(time_control_seconds, increment_seconds)
@@ -70,11 +89,22 @@ class GameController(QObject):
         # Connect UI signals
         self.board_widget.square_clicked.connect(self._on_square_clicked)
         self.move_list.move_selected.connect(self._goto_ply)
+        self.move_list.takeback_requested.connect(self.takeback)
+        self.move_list.delete_move_requested.connect(self.delete_move)
+        self.move_list.new_variation_requested.connect(self.add_variation)
+        self.move_list.switch_variation_requested.connect(self.switch_variation)
+        self.move_list.promote_variation_requested.connect(self.promote_variation)
+        self.move_list.save_analysis_requested.connect(self.save_current_analysis)
+        self.move_list.load_analysis_requested.connect(self.load_analysis)
         self.white_clock.timeout.connect(self._on_timeout)
         self.black_clock.timeout.connect(self._on_timeout)
 
-        # Move history
-        self.move_history: List[Move] = []
+        # Multi-game navigation
+        self.loaded_games: List[Tuple[str, List[Move]]] = []
+        self.current_game_index: int = -1
+
+        # Promotion toolbar (set by main window)
+        self.promotion_toolbar = None
 
     # -----------------------------------------------------------------
     # Game lifecycle
@@ -85,7 +115,10 @@ class GameController(QObject):
         self.selected_square = None
         self.current_legal_moves = []
         self.move_history.clear()
+        self.comments.clear()
         self.move_list.clear_moves()
+        self.root = MoveNode(None, None)
+        self.current_node = self.root
         self.white_clock.reset()
         self.black_clock.reset()
         self.white_clock.set_time(self.time_control, self.increment)
@@ -93,6 +126,7 @@ class GameController(QObject):
         self.board_widget.set_board(self.state.board)
         self.board_widget.set_selected(None, [])
         self.board_widget.set_last_move(None)
+        self.board_widget.clear_annotations()
         self._init_recording()
         self.game_active = True
         self.review_mode = False
@@ -100,6 +134,8 @@ class GameController(QObject):
         self._start_engines()
         self._start_turn()
         self.position_changed.emit()
+        self.update_captured_display()
+        self.game_mode_changed.emit("playing")
         self.status_update.emit("White's turn")
 
     def _stop_engines(self):
@@ -148,17 +184,11 @@ class GameController(QObject):
         engine = self._current_engine()
         if engine and not self.engine_thinking and not self.review_mode:
             engine.send_position(self.move_history)
-            engine.send_go(movetime=10000)   # 10s per move – could be made configurable
+            engine.send_go(movetime=10000)
             self.engine_thinking = True
             self.status_update.emit("Engine thinking...")
         else:
             self.status_update.emit(f"{'White' if self.state.turn == Colour.WHITE else 'Black'}'s turn")
-
-    def _stop_turn(self):
-        if self.state.turn == Colour.WHITE:
-            self.white_clock.stop()
-        else:
-            self.black_clock.stop()
 
     # -----------------------------------------------------------------
     # Human move handling
@@ -167,7 +197,7 @@ class GameController(QObject):
         if not self.game_active or self.engine_thinking or self.review_mode:
             return
         if self._current_engine() is not None:
-            return   # engine's turn
+            return
         if self.selected_square is None:
             piece = self.state.board.get_piece(row, col)
             if piece and piece.colour == self.state.turn:
@@ -186,7 +216,6 @@ class GameController(QObject):
                         return
                     self._execute_move(final_move)
                     return
-            # Reselect or deselect
             piece = self.state.board.get_piece(row, col)
             if piece and piece.colour == self.state.turn:
                 self.selected_square = (row, col)
@@ -214,54 +243,75 @@ class GameController(QObject):
             if not _piece_can_move_from(temp_board, move.to_r, move.to_c, piece.ptype, piece.colour):
                 forced = True
 
-        dlg = PromotionDialog(piece.ptype, piece.colour, forced)
         if forced and piece.ptype != PieceType.PAWN:
-            # Auto-promote for non-pawn pieces
             target = PROMOTION_TARGETS[piece.ptype][0]
             return Move(move.from_r, move.from_c, move.to_r, move.to_c, target)
+
+        dlg = PromotionDialog(piece.ptype, piece.colour, forced)
         if forced:
             if dlg.exec() == QDialog.Accepted and dlg.chosen_piece:
                 return Move(move.from_r, move.from_c, move.to_r, move.to_c, dlg.chosen_piece)
-            return None   # should not happen
+            return None
         else:
             if dlg.exec() == QDialog.Accepted and dlg.chosen_piece:
                 return Move(move.from_r, move.from_c, move.to_r, move.to_c, dlg.chosen_piece)
-            return Move(move.from_r, move.from_c, move.to_r, move.to_c)  # decline promotion
+            return Move(move.from_r, move.from_c, move.to_r, move.to_c)
 
     # -----------------------------------------------------------------
     # Execute move
     # -----------------------------------------------------------------
-    def _execute_move(self, move: Move):
+    def _execute_move(self, move: Move, comment: str = ""):
         piece = self.state.board.get_piece(move.from_r, move.from_c)
         move_str = move_to_fpgn(move, piece.ptype)
-        if self.fpgn_writer and not self.review_mode:
-            self.fpgn_writer.add_move(move, piece.ptype)
 
-        self.state.make_move(move)
-        self.move_history.append(move)
-        self.move_list.add_move(move_str, piece.colour == Colour.WHITE)
+        def apply_move_after_animation():
+            if not self.review_mode:
+                if piece.colour == Colour.WHITE:
+                    self.white_clock.stop()
+                else:
+                    self.black_clock.stop()
 
-        self.board_widget.set_board(self.state.board)
-        self.board_widget.set_last_move((move.from_r, move.from_c, move.to_r, move.to_c))
-        self.selected_square = None
-        self.current_legal_moves = []
-        self.board_widget.set_selected(None, [])
-        self.position_changed.emit()
-        self.move_made.emit()
+            if self.fpgn_writer and not self.review_mode:
+                self.fpgn_writer.add_move(move, piece.ptype, comment=comment if comment else None)
 
-        # Apply increment
-        if not self.review_mode:
-            if piece.colour == Colour.WHITE:
-                self.white_clock.add_increment()
+            self.state.make_move(move)
+            self.move_history.append(move)
+            self.comments.append(comment)
+            self.move_list.add_move(move_str, piece.colour == Colour.WHITE, comment)
+
+            new_node = self.current_node.add_main_move(move)
+            self.current_node = new_node
+
+            self.board_widget.set_board(self.state.board)
+            self.board_widget.set_last_move((move.from_r, move.from_c, move.to_r, move.to_c))
+            self.selected_square = None
+            self.current_legal_moves = []
+            self.board_widget.set_selected(None, [])
+
+            if not self.review_mode:
+                if piece.colour == Colour.WHITE:
+                    self.white_clock.add_increment()
+                else:
+                    self.black_clock.add_increment()
+
+            self.position_changed.emit()
+            self.move_made.emit()
+            self.update_captured_display()
+
+            if self.sound_manager and not self.review_mode:
+                self.sound_manager.play("move")
+
+            result = game_result(self.state)
+            if result is not None:
+                self._handle_game_end(result)
             else:
-                self.black_clock.add_increment()
+                self._start_turn()
 
-        self._stop_turn()
-        result = game_result(self.state)
-        if result is not None:
-            self._handle_game_end(result)
+        if self.animation_enabled and not self.review_mode:
+            self.board_widget.animate_move(move.from_r, move.from_c, move.to_r, move.to_c,
+                                           piece, apply_move_after_animation)
         else:
-            self._start_turn()
+            apply_move_after_animation()
 
     @staticmethod
     def _apply_move_to_board(board: Board, move: Move):
@@ -304,6 +354,124 @@ class GameController(QObject):
         self._end_game(self.state.turn.opponent(), "illegal move")
 
     # -----------------------------------------------------------------
+    # Takeback & Delete Move
+    # -----------------------------------------------------------------
+    def takeback(self, ply: int = -1):
+        if not self.move_history:
+            return
+        if ply == -1:
+            ply = len(self.move_history) - 1
+        elif ply >= len(self.move_history):
+            return
+        while len(self.move_history) > ply:
+            self.move_history.pop()
+            self.comments.pop()
+            self.state.unmake_move()
+        self._rebuild_tree_from_history()
+        self._refresh_after_takeback()
+
+    def delete_move(self, ply: int):
+        if ply < 0 or ply >= len(self.move_history):
+            return
+        remaining_moves = self.move_history[ply+1:]
+        while len(self.move_history) > ply:
+            self.move_history.pop()
+            self.comments.pop()
+            self.state.unmake_move()
+        for move in remaining_moves:
+            self.state.make_move(move)
+            self.move_history.append(move)
+            self.comments.append("")
+        self._rebuild_tree_from_history()
+        self._refresh_after_takeback()
+
+    def _rebuild_tree_from_history(self):
+        self.root = MoveNode(None, None)
+        self.current_node = self.root
+        for move in self.move_history:
+            self.current_node = self.current_node.add_main_move(move)
+
+    def _refresh_after_takeback(self):
+        self.move_list.clear_moves()
+        for i, move in enumerate(self.move_history):
+            piece = self.state.board.get_piece(move.from_r, move.from_c)
+            move_str = move_to_fpgn(move, piece.ptype)
+            self.move_list.add_move(move_str, piece.colour == Colour.WHITE, self.comments[i])
+        self.board_widget.set_board(self.state.board)
+        self.board_widget.set_last_move(None)
+        if self.move_history:
+            last = self.move_history[-1]
+            self.board_widget.set_last_move((last.from_r, last.from_c, last.to_r, last.to_c))
+        self.position_changed.emit()
+        self.update_captured_display()
+        if not self.review_mode and self.game_active:
+            self._start_turn()
+
+    # -----------------------------------------------------------------
+    # Variation management
+    # -----------------------------------------------------------------
+    def add_variation(self):
+        self._adding_variation = True
+        self.status_update.emit("Play moves for the new variation.")
+
+    def switch_variation(self, node: MoveNode):
+        if node.parent != self.current_node:
+            return
+        self.current_node = node
+        self._replay_to_node(node)
+        self.variations_changed.emit()
+
+    def promote_variation(self, node: MoveNode):
+        parent = node.parent
+        if parent:
+            old_main = parent.next_main
+            parent.children.remove(node)
+            if old_main:
+                parent.children.append(old_main)
+            parent.next_main = node
+            self._replay_to_node(node)
+            self.variations_changed.emit()
+
+    def _replay_to_node(self, target_node: MoveNode):
+        self.state = GameState()
+        node = self.root.next_main
+        self.move_history.clear()
+        while node and node != target_node.next_main:
+            self.state.make_move(node.move)
+            self.move_history.append(node.move)
+            if node == target_node:
+                break
+            node = node.next_main
+        self.board_widget.set_board(self.state.board)
+        self.position_changed.emit()
+
+    # -----------------------------------------------------------------
+    # Analysis DB integration
+    # -----------------------------------------------------------------
+    def save_current_analysis(self, pv: str, mrm: MultiEngineResponse, movetime: int = 0, depth: int = 0):
+        self.analysis_db.save_analysis(self.state, pv, mrm, movetime, depth)
+
+    def load_analysis(self, pv: str, name: str) -> Optional[MultiEngineResponse]:
+        return self.analysis_db.load_analysis(self.state, pv, name)
+
+    # -----------------------------------------------------------------
+    # Captured pieces display
+    # -----------------------------------------------------------------
+    def update_captured_display(self):
+        white_score = material_score(self.state.board, Colour.WHITE)
+        black_score = material_score(self.state.board, Colour.BLACK)
+        diff = white_score - black_score
+        if diff > 0:
+            self.white_clock.set_captured(f"<b>+{diff}</b>")
+            self.black_clock.set_captured("")
+        elif diff < 0:
+            self.white_clock.set_captured("")
+            self.black_clock.set_captured(f"<b>+{-diff}</b>")
+        else:
+            self.white_clock.set_captured("")
+            self.black_clock.set_captured("")
+
+    # -----------------------------------------------------------------
     # Game end
     # -----------------------------------------------------------------
     def _handle_game_end(self, result):
@@ -326,6 +494,8 @@ class GameController(QObject):
         if self.fpgn_writer:
             self.fpgn_writer.add_result(fpgn_result)
             self.fpgn_writer.close()
+        if self.sound_manager:
+            self.sound_manager.play("game_end")
 
     def _end_game(self, winner: Colour, reason: str):
         self.white_clock.stop()
@@ -334,7 +504,6 @@ class GameController(QObject):
         self.game_ended.emit(reason)
 
     def _tiebreak_new_game(self):
-        # Swap engines and restart
         self.white_engine, self.black_engine = self.black_engine, self.white_engine
         if self.fpgn_writer:
             self.fpgn_writer.add_result("1/2-1/2")
@@ -366,23 +535,35 @@ class GameController(QObject):
         self.position_changed.emit()
         self.white_clock.stop()
         self.black_clock.stop()
+        self.update_captured_display()
 
     def get_legal_moves(self) -> List[Move]:
         return legal_moves(self.state.board, self.state.turn)
 
     # -----------------------------------------------------------------
-    # FPGN loading
+    # FPGN loading with multi-game support
     # -----------------------------------------------------------------
-    def load_game_from_fpgn(self, file_path: str, game_index: int = 0):
+    def load_games_from_fpgn(self, file_path: str):
         games = FPGNReader.read_file(file_path)
-        if not games or game_index >= len(games):
-            self.status_update.emit("No valid game found.")
+        if not games:
+            self.status_update.emit("No valid games found.")
             return
-        headers, moves = games[game_index]
+        self.loaded_games = [(file_path, moves) for _, moves in games]
+        self.current_game_index = 0
+        self._load_game_by_index(0)
+
+    def _load_game_by_index(self, index: int):
+        if index < 0 or index >= len(self.loaded_games):
+            return
+        self.current_game_index = index
+        file_path, moves = self.loaded_games[index]
         self._stop_engines()
         self.state = GameState()
         self.move_history.clear()
+        self.comments.clear()
         self.move_list.clear_moves()
+        self.root = MoveNode(None, None)
+        self.current_node = self.root
         self.white_clock.stop()
         self.black_clock.stop()
         self.game_active = False
@@ -390,7 +571,6 @@ class GameController(QObject):
         self.engine_thinking = False
         self.selected_square = None
         self.current_legal_moves = []
-
         self.board_widget.set_board(self.state.board)
         self.board_widget.set_last_move(None)
         for move in moves:
@@ -400,10 +580,31 @@ class GameController(QObject):
             self.state.make_move(move)
             self.move_history.append(move)
             move_str = move_to_fpgn(move, piece.ptype)
-            self.move_list.add_move(move_str, piece.colour == Colour.WHITE)
+            self.move_list.add_move(move_str, piece.colour == Colour.WHITE, "")
+            self.comments.append("")
+            self.current_node = self.current_node.add_main_move(move)
         self.board_widget.set_board(self.state.board)
         if self.move_history:
             last = self.move_history[-1]
             self.board_widget.set_last_move((last.from_r, last.from_c, last.to_r, last.to_c))
         self.position_changed.emit()
-        self.status_update.emit(f"Loaded game from {file_path} in review mode.")
+        self.update_captured_display()
+        self.game_mode_changed.emit("review")
+        self.status_update.emit(f"Loaded game {index+1}/{len(self.loaded_games)} from {file_path}")
+
+    def previous_game(self):
+        if self.loaded_games and self.current_game_index > 0:
+            self._load_game_by_index(self.current_game_index - 1)
+
+    def next_game(self):
+        if self.loaded_games and self.current_game_index < len(self.loaded_games) - 1:
+            self._load_game_by_index(self.current_game_index + 1)
+
+    def load_game_from_fpgn(self, file_path: str, game_index: int = 0):
+        games = FPGNReader.read_file(file_path)
+        if not games or game_index >= len(games):
+            self.status_update.emit("No valid game found.")
+            return
+        self.loaded_games = [(file_path, moves) for _, moves in games]
+        self.current_game_index = game_index
+        self._load_game_by_index(game_index)

@@ -3,8 +3,8 @@ from PySide6.QtWidgets import (
     QLineEdit, QDialogButtonBox
 )
 from typing import List
-from chog.core.movegen import Move
-from chog.engine.protocol import move_to_uci
+from src.core.movegen import Move
+from src.engine.protocol import move_to_uci
 
 class AddMoveDialog(QDialog):
     def __init__(self, legal_moves: List[Move], parent=None):

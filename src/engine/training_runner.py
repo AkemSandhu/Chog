@@ -1,12 +1,13 @@
 from PySide6.QtCore import QObject, Signal, QTimer
 from typing import Optional, List, Tuple
-from chog.core.game_state import GameState, game_result
-from chog.core.movegen import Move, legal_moves
-from chog.core.pieces import Colour
-from chog.core.rules import material_score
-from chog.engine.manager import EngineManager
-from chog.engine.protocol import uci_to_move, board_to_fen
-from chog.io.fen import board_to_fen
+from src.core.game_state import GameState, game_result
+from src.core.movegen import Move
+from src.core.rules import legal_moves
+from src.core.pieces import Colour
+from src.core.rules import material_score
+from src.engine.manager import EngineManager
+from src.engine.protocol import uci_to_move
+from src.io.fen import board_to_fen
 
 class TrainingGameRunner(QObject):
     """

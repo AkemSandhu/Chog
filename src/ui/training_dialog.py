@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QCheckBox, QPushButton, QPlainTextEdit, QFormLayout, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QTimer
-from chog.engine.training_manager import TrainingManager
+from src.engine.training_manager import TrainingManager
 
 class TrainingDialog(QDialog):
     def __init__(self, parent=None):
@@ -53,12 +53,10 @@ class TrainingDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Log output
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         layout.addWidget(self.log)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("Start Training")
         self.start_btn.clicked.connect(self.start_training)

@@ -27,10 +27,8 @@ class PieceType(IntEnum):
     GOLD = 15      # O  (promoted Pawn choice)
     HUNTER = 16    # U  (promoted Pawn choice)
 
-# Which types can be promoted (at the moment they move)
 PROMOTABLE_TYPES = {PieceType.PAWN, PieceType.LANCE, PieceType.HORSE, PieceType.EAGLE}
 
-# Mapping from base type to list of possible promoted types (for pawn: both Gold/Hunter)
 PROMOTION_TARGETS = {
     PieceType.PAWN: [PieceType.GOLD, PieceType.HUNTER],
     PieceType.LANCE: [PieceType.BERS],
@@ -38,7 +36,6 @@ PROMOTION_TARGETS = {
     PieceType.EAGLE: [PieceType.DRAGON],
 }
 
-# Single character symbols used for display and FEN
 PIECE_SYMBOLS = {
     PieceType.PAWN: 'P', PieceType.ROOK: 'R', PieceType.EAGLE: 'A',
     PieceType.BISHOP: 'B', PieceType.WAZIR: 'W', PieceType.FERZ: 'F',

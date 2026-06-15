@@ -1,6 +1,5 @@
-# ui/promotion_dialog.py
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
-from chog.core.pieces import PieceType, Colour, PROMOTION_TARGETS
+from src.core.pieces import PieceType, Colour, PROMOTION_TARGETS
 
 class PromotionDialog(QDialog):
     def __init__(self, piece_type: PieceType, colour: Colour, forced: bool, parent=None):
@@ -24,7 +23,6 @@ class PromotionDialog(QDialog):
                 self.decline_btn.clicked.connect(self.decline)
                 layout.addWidget(self.decline_btn)
         else:
-            # Non‑pawn promotable piece: only one target
             target = PROMOTION_TARGETS[piece_type][0]
             self.promote_btn = QPushButton(f"Promote to {target.name}")
             self.promote_btn.clicked.connect(lambda: self.done_with(target))

@@ -34,7 +34,6 @@ class MatchSetupDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)

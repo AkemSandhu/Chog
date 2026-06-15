@@ -1,12 +1,12 @@
 from PySide6.QtCore import QObject, Signal, QTimer
 from typing import Optional
-from chog.engine.manager import EngineManager
-from chog.engine.training_runner import TrainingGameRunner
+from src.engine.manager import EngineManager
+from src.engine.training_runner import TrainingGameRunner
 
 class TrainingManager(QObject):
     training_started = Signal()
-    game_completed = Signal(int, dict)       # game number, result dict
-    training_finished = Signal(dict)         # summary statistics
+    game_completed = Signal(int, dict)
+    training_finished = Signal(dict)
     status_update = Signal(str)
 
     def __init__(self,
@@ -14,7 +14,7 @@ class TrainingManager(QObject):
                  engine2_path: str,
                  num_games: int = 100,
                  movetime: int = 5000,
-                 save_interval: int = 10,    # save weights every N games
+                 save_interval: int = 10,
                  weights_file1: str = "weights_engine1.nn",
                  weights_file2: str = "weights_engine2.nn",
                  learn_enabled: bool = True):
@@ -35,13 +35,10 @@ class TrainingManager(QObject):
         self.results = []
 
     def start(self):
-        """Launch engines and begin the training loop."""
         self.engine1 = EngineManager(self.engine1_path)
         self.engine2 = EngineManager(self.engine2_path)
-        # We'll manage their readiness manually
         self.engine1.start()
         self.engine2.start()
-        # Wait for both to be ready? We'll queue games after a short delay.
         QTimer.singleShot(2000, self._run_next_game)
 
         self.running = True
@@ -62,7 +59,6 @@ class TrainingManager(QObject):
             self._finish_training()
             return
 
-        # Alternate colours
         if self.current_game % 2 == 0:
             white_engine = self.engine1
             black_engine = self.engine2
@@ -85,11 +81,9 @@ class TrainingManager(QObject):
         self.game_completed.emit(game_num, result)
         self.status_update.emit(f"Game {game_num+1}/{self.num_games}: {result['result']} ({result['reason']})")
 
-        # Save weights at intervals
         if (game_num + 1) % self.save_interval == 0:
             self._save_weights()
 
-        # Proceed to next game after a short delay
         QTimer.singleShot(1000, self._run_next_game)
 
     def _save_weights(self):
