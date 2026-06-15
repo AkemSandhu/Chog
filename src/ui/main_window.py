@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtCore import Qt
 from typing import Optional
+import json
 
 from src.ui.board_widget import BoardWidget
 from src.ui.move_list import MoveListWidget
@@ -45,21 +46,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Chog – Universal Chess‑Shogi Hybrid")
         self.resize(1200, 900)
+        self.setWindowIcon(icons.icon_about())
 
-        # ---- Sound manager ----
         self.sound_manager = SoundManager("sounds")
-
-        # ---- Shortcuts manager ----
         self.shortcuts_manager = ShortcutsManager()
 
-        # ---- Central board ----
         self.board_widget = BoardWidget()
         self.setCentralWidget(self.board_widget)
 
-        # ---- Navigation toolbar + Move list dock (right) ----
+        # Navigation toolbar + Move list
         self.nav_toolbar = NavigationToolbar()
         self.move_list = MoveListWidget()
-
         move_container = QWidget()
         move_layout = QVBoxLayout(move_container)
         move_layout.addWidget(self.nav_toolbar)
@@ -75,7 +72,7 @@ class MainWindow(QMainWindow):
             lambda: self.controller._goto_ply(len(self.controller.move_history) - 1)
         )
 
-        # ---- Clock dock (bottom) ----
+        # Clocks
         self.white_clock = ClockWidget()
         self.white_clock.label.setText("White")
         self.black_clock = ClockWidget()
@@ -88,44 +85,43 @@ class MainWindow(QMainWindow):
         clock_dock.setWidget(clock_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, clock_dock)
 
-        # ---- Analysis panel dock (left) ----
+        # Analysis
         self.analysis_panel = AnalysisPanel()
         analysis_dock = QDockWidget("Analysis", self)
         analysis_dock.setWidget(self.analysis_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, analysis_dock)
-
         self.analysis_panel.arrows_changed.connect(self.board_widget.set_arrows)
         self.analysis_panel.markers_changed.connect(self.board_widget.set_markers)
 
-        # ---- Analysis graph dock (bottom) ----
+        # Graph
         self.analysis_graph = AnalysisGraph()
         graph_dock = QDockWidget("Eval Graph", self)
         graph_dock.setWidget(self.analysis_graph)
         self.addDockWidget(Qt.BottomDockWidgetArea, graph_dock)
 
-        # ---- Opening Book dock (right) ----
+        # Opening Book
         self.book_editor = BookEditorWidget()
         book_dock = QDockWidget("Opening Book", self)
         book_dock.setWidget(self.book_editor)
         self.addDockWidget(Qt.RightDockWidgetArea, book_dock)
 
-        # ---- Game Database dock (right) ----
+        # Game Database
         self.game_database = GameDatabaseWidget()
         db_dock = QDockWidget("Game Database", self)
         db_dock.setWidget(self.game_database)
         self.addDockWidget(Qt.RightDockWidgetArea, db_dock)
 
-        # ---- Dynamic toolbar (top) ----
+        # Dynamic toolbar
         self.dynamic_toolbar = DynamicToolbar(self)
         self.addToolBar(Qt.TopToolBarArea, self.dynamic_toolbar)
 
-        # ---- Status bar ----
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel("Ready")
         self.status_bar.addWidget(self.status_label)
 
-        # ---- Game controller (animation enabled) ----
+        # Controller
         self.controller = GameController(
             self.board_widget, self.move_list,
             self.white_clock, self.black_clock,
@@ -134,24 +130,27 @@ class MainWindow(QMainWindow):
             animation_enabled=True,
             sound_manager=self.sound_manager
         )
+        try:
+            with open("config/settings.json", "r") as f:
+                settings = json.load(f)
+        except FileNotFoundError:
+            settings = {}
+        self.controller.clock_auto_start = settings.get("clock/auto_start", False)
+
         self.controller.status_update.connect(self.status_label.setText)
         self.controller.game_ended.connect(self._on_game_ended)
         self.controller.position_changed.connect(self._on_position_changed)
         self.controller.game_mode_changed.connect(self._update_toolbar)
+        self.controller.position_changed.connect(self._update_nav_buttons)
 
-        # ---- Match manager (on demand) ----
         self.match_manager: Optional[EngineMatchManager] = None
         self.batch_analysis: Optional[BatchAnalysis] = None
-
         self.game_database.game_load_requested.connect(self.controller.load_game_from_fpgn)
 
-        # ---- Tray icon (F12) ----
         self.tray_icon = None
 
-        # ---- Menus (structured framework) ----
         self._create_menus()
 
-        # ---- Shrink window after layout completes ----
         for dock in (move_dock, clock_dock, analysis_dock, graph_dock, book_dock, db_dock):
             dock.topLevelChanged.connect(lambda floating: self.shrink())
 
@@ -164,22 +163,24 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self.shrink()
 
+    # ---- Navigation helpers ----
     def _nav_go_back(self):
-        history = self.controller.move_history
-        if not history:
-            return
-        current_ply = len(history) - 1
-        if current_ply > 0:
-            self.controller._goto_ply(current_ply - 1)
+        ply = self.controller.current_ply
+        if ply > 0:
+            self.controller._goto_ply(ply - 1)
 
     def _nav_go_forward(self):
+        ply = self.controller.current_ply
         history = self.controller.move_history
-        if not history:
-            return
-        current_ply = len(history) - 1
-        if current_ply < len(history) - 1:
-            self.controller._goto_ply(current_ply + 1)
+        if ply < len(history) - 1:
+            self.controller._goto_ply(ply + 1)
 
+    def _update_nav_buttons(self):
+        ply = self.controller.current_ply
+        total = len(self.controller.move_history)
+        self.nav_toolbar.set_enabled(ply <= 0, ply >= total - 1)
+
+    # ---- Toolbar ----
     def _update_toolbar(self, mode: str):
         if mode == "playing":
             actions = [
@@ -197,16 +198,9 @@ class MainWindow(QMainWindow):
     # ---- Menu creation ----
     def _create_menus(self):
         self.menu_instances = [
-            FileMenu(self),
-            ViewMenu(self),
-            ReviewMenu(self),
-            EngineMenu(self),
-            AnalysisMenu(self),
-            MatchMenu(self),
-            BookMenu(self),
-            TrainingMenu(self),
-            ToolsMenu(self),
-            HelpMenu(self),
+            FileMenu(self), ViewMenu(self), ReviewMenu(self),
+            EngineMenu(self), AnalysisMenu(self), MatchMenu(self),
+            BookMenu(self), TrainingMenu(self), ToolsMenu(self), HelpMenu(self)
         ]
         self._all_menu_actions = {}
         for menu in self.menu_instances:
@@ -216,11 +210,11 @@ class MainWindow(QMainWindow):
 
         # Options menu
         options_menu = self.menuBar().addMenu("&Options")
-        config_action = QAction(icons.icon_engine_config(), "General Configuration...", self)
+        config_action = QAction("General Configuration...", self)
+        config_action.setIcon(icons.icon_engine_config())
         config_action.triggered.connect(self._open_config_dialog)
         options_menu.addAction(config_action)
 
-        # Apply shortcuts from manager
         for (key, _), action in self._all_menu_actions.items():
             shortcut = self.shortcuts_manager.get(key)
             if shortcut:
@@ -260,6 +254,9 @@ class MainWindow(QMainWindow):
 
     # ---- Tray icon ----
     def toggle_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            temporary_message(self, "System tray not available.", 2000)
+            return
         if not self.tray_icon:
             restore_action = QAction("Show", self)
             restore_action.triggered.connect(self.restore_from_tray)
@@ -289,13 +286,18 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.restore_from_tray()
 
-    # ---- Config dialog ----
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    # ---- Config / shortcuts dialogs ----
     def _open_config_dialog(self):
         dlg = ConfigDialog(self)
         if dlg.exec():
             temporary_message(self, "Settings saved. Some changes may require restart.", 2500)
 
-    # ---- Shortcuts dialog ----
     def _open_shortcuts_dialog(self):
         dlg = ShortcutsDialog(self.shortcuts_manager, self)
         if dlg.exec():

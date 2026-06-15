@@ -1,6 +1,4 @@
-# src/ui/menus/tools_menu.py
 import os
-from PySide6.QtGui import QIcon
 from src.ui.menus.base_menu import RootMenu, SubMenu
 from src.ui import icons
 
@@ -10,21 +8,17 @@ class ToolsMenu(RootMenu):
         self.title = "&Tools"
 
     def build(self):
-        # Databases submenu
         db_sub = self.submenu("Databases", icons.icon_database())
         self._populate_db_submenu(db_sub, "games")
 
-        # Openings submenu
         book_sub = self.submenu("Opening Books", icons.icon_opening())
         self._populate_book_submenu(book_sub, "config")
 
-        # Shortcuts
         self.option("shortcuts", "Configure Shortcuts...", icons.icon_shortcuts())
 
     def _populate_db_submenu(self, submenu: SubMenu, folder: str):
         if not os.path.isdir(folder):
             return
-        # List .fpgn files
         for file in sorted(os.listdir(folder)):
             if file.endswith(".fpgn"):
                 full_path = os.path.join(folder, file)
@@ -46,4 +40,4 @@ class ToolsMenu(RootMenu):
             self.main_window.controller.load_games_from_fpgn(db_path)
         elif key.startswith("open_book_"):
             book_path = key[len("open_book_"):]
-            self.main_window.book_editor._load_book(book_path)  # need a method to load specific path
+            self.main_window.book_editor.load_book_path(book_path)

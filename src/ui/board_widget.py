@@ -9,7 +9,6 @@ from src.core.pieces import Piece, Colour, PieceType, PIECE_SYMBOLS
 
 
 class BoardArrow:
-    """Stores one arrow definition."""
     def __init__(self, from_r: int, from_c: int, to_r: int, to_c: int,
                  color: QColor = QColor(255, 255, 0, 180), width: int = 3):
         self.from_r = from_r
@@ -21,14 +20,13 @@ class BoardArrow:
 
 
 class BoardMarker:
-    """Stores one marker (coloured circle) on a square."""
     def __init__(self, row: int, col: int, color: QColor = QColor(0, 255, 0, 150),
                  radius: int = 12, corner: str = "center"):
         self.row = row
         self.col = col
         self.color = color
         self.radius = radius
-        self.corner = corner  # "tl", "tr", "bl", "br", "center"
+        self.corner = corner
 
 
 class BoardWidget(QWidget):
@@ -47,14 +45,11 @@ class BoardWidget(QWidget):
         self.setMinimumSize(10 * self.square_size + 2 * self.margin,
                             10 * self.square_size + 2 * self.margin)
 
-        # Piece images
         self.piece_pixmaps = self._load_piece_images()
 
-        # Arrows & markers
         self.arrows: List[BoardArrow] = []
         self.markers: List[BoardMarker] = []
 
-        # Animation state
         self._animating = False
         self._anim_from_r = 0
         self._anim_from_c = 0
@@ -80,7 +75,6 @@ class BoardWidget(QWidget):
                     pixmaps[(colour, ptype)] = QPixmap(path)
         return pixmaps
 
-    # --- New setters ---
     def set_arrows(self, arrows: List[BoardArrow]):
         self.arrows = arrows
         self.update()
@@ -114,7 +108,6 @@ class BoardWidget(QWidget):
         self._anim_timer.start(16)
         self.update()
 
-    # --- Existing setters ---
     def set_board(self, board: Board):
         self.board = board
         self.update()
@@ -132,10 +125,9 @@ class BoardWidget(QWidget):
         return QSize(10 * self.square_size + 2 * self.margin,
                      10 * self.square_size + 2 * self.margin)
 
-    # --- Coordinate conversion ---
     def _row_col_to_rect(self, row: int, col: int) -> QRect:
         if self.flipped:
-            view_row = 9 - row
+            view_row = row
             view_col = 9 - col
         else:
             view_row = 9 - row
@@ -155,7 +147,7 @@ class BoardWidget(QWidget):
             return None
         if self.flipped:
             col = 9 - view_col
-            row = 9 - view_row
+            row = view_row
         else:
             col = view_col
             row = 9 - view_row
@@ -167,13 +159,12 @@ class BoardWidget(QWidget):
         if square is not None:
             self.square_clicked.emit(square[0], square[1])
 
-    # --- Paint event ---
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self._draw_board(painter)
         self._draw_coordinates(painter)
-        self._draw_pieces(painter)      # now includes animation handling
+        self._draw_pieces(painter)
         self._draw_highlights(painter)
         self._draw_last_move(painter)
         self._draw_arrows(painter)
@@ -192,7 +183,6 @@ class BoardWidget(QWidget):
         font = QFont("Arial", 10)
         painter.setFont(font)
         painter.setPen(QColor(0, 0, 0))
-        # File letters
         for c in range(10):
             if self.flipped:
                 col_char = chr(ord('a') + (9 - c))
@@ -203,7 +193,6 @@ class BoardWidget(QWidget):
             painter.drawText(QRect(x - 10, y_bottom, 20, 20), Qt.AlignCenter, col_char)
             y_top = self.margin - 25
             painter.drawText(QRect(x - 10, y_top, 20, 20), Qt.AlignCenter, col_char)
-        # Rank numbers
         for r in range(10):
             if self.flipped:
                 rank_num = str(r)
@@ -216,10 +205,8 @@ class BoardWidget(QWidget):
             painter.drawText(QRect(x_right, y - 10, 20, 20), Qt.AlignCenter, rank_num)
 
     def _draw_pieces(self, painter: QPainter):
-        """Draw all pieces, skipping the source square while animating."""
         for r in range(10):
             for c in range(10):
-                # Skip source square during animation
                 if self._animating and (r, c) == (self._anim_from_r, self._anim_from_c):
                     continue
                 piece = self.board.get_piece(r, c)
@@ -230,7 +217,6 @@ class BoardWidget(QWidget):
                 if pixmap:
                     painter.drawPixmap(rect, pixmap)
                 else:
-                    # Fallback: draw piece symbol as text
                     font = QFont("Arial", int(self.square_size * 0.7), QFont.Bold)
                     painter.setFont(font)
                     if piece.colour == Colour.WHITE:
@@ -243,7 +229,6 @@ class BoardWidget(QWidget):
                     painter.drawText(rect, Qt.AlignCenter,
                                      symbol if piece.colour == Colour.WHITE else symbol.lower())
 
-        # Draw the animated piece if active
         if self._animating and self._anim_piece is not None:
             from_rect = self._row_col_to_rect(self._anim_from_r, self._anim_from_c)
             to_rect = self._row_col_to_rect(self._anim_to_r, self._anim_to_c)
@@ -254,7 +239,6 @@ class BoardWidget(QWidget):
             if pixmap:
                 painter.drawPixmap(anim_rect, pixmap)
             else:
-                # Fallback for animated piece
                 font = QFont("Arial", int(self.square_size * 0.7), QFont.Bold)
                 painter.setFont(font)
                 if self._anim_piece.colour == Colour.WHITE:
@@ -271,7 +255,7 @@ class BoardWidget(QWidget):
         if self.selected_square is not None:
             r, c = self.selected_square
             rect = self._row_col_to_rect(r, c)
-            painter.setBrush(Qt.NoBrush)  # <-- prevents unwanted fill
+            painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(QColor(255, 255, 0), 3))
             painter.drawRect(rect)
         for r, c in self.legal_destinations:
@@ -290,7 +274,6 @@ class BoardWidget(QWidget):
             painter.setBrush(QColor(255, 255, 0, 80))
             painter.drawRect(rect)
 
-    # --- Arrow drawing ---
     def _draw_arrows(self, painter: QPainter):
         if not self.arrows:
             return
@@ -305,7 +288,6 @@ class BoardWidget(QWidget):
         pen = QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen)
         painter.drawLine(p1, p2)
-        # Arrowhead
         arrow_len = 10.0
         line = QLineF(p2, p1)
         if line.length() < 1:
@@ -321,7 +303,6 @@ class BoardWidget(QWidget):
         painter.setBrush(color)
         painter.drawPolygon(arrow_head)
 
-    # --- Marker drawing ---
     def _draw_markers(self, painter: QPainter):
         if not self.markers:
             return
@@ -341,7 +322,6 @@ class BoardWidget(QWidget):
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(QPointF(x + marker.radius, y + marker.radius), marker.radius, marker.radius)
 
-    # --- Animation timer ---
     def _animation_step(self):
         import time
         if self._anim_start_time == 0:

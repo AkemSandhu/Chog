@@ -11,8 +11,7 @@ from src.engine.batch_analysis import BatchAnalysis
 from src.io.fpgn import FPGNReader
 
 class GameDatabaseWidget(QWidget):
-    """Dockable widget for browsing and managing a game database."""
-    game_load_requested = Signal(str, int)  # filepath, game_index
+    game_load_requested = Signal(str, int)
     status_update = Signal(str)
 
     def __init__(self, parent=None):
@@ -22,7 +21,6 @@ class GameDatabaseWidget(QWidget):
 
         layout = QVBoxLayout(self)
 
-        # Toolbar
         toolbar = QHBoxLayout()
         self.load_folder_btn = QPushButton("Load Folder")
         self.load_folder_btn.clicked.connect(self._load_folder)
@@ -44,11 +42,9 @@ class GameDatabaseWidget(QWidget):
         toolbar.addWidget(self.delete_btn)
         layout.addLayout(toolbar)
 
-        # Game count label
         self.count_label = QLabel("0 games")
         layout.addWidget(self.count_label)
 
-        # Table
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["#", "White", "Black", "Result", "Date", "Moves"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -100,6 +96,13 @@ class GameDatabaseWidget(QWidget):
 
     def _import_fpgn(self):
         from src.ui.import_fpgn_dialog import ImportFPGNDialog
+        if not self.db.folder:
+            folder = QFileDialog.getExistingDirectory(self, "Select Target Folder for Import")
+            if folder:
+                self.db.folder = folder
+                self.db.scan_folder(folder)
+            else:
+                return
         dlg = ImportFPGNDialog(self, self.db.folder)
         if dlg.exec():
             self._refresh()
@@ -115,14 +118,12 @@ class GameDatabaseWidget(QWidget):
         movetime, ok = QInputDialog.getInt(self, "Move Time", "Milliseconds per move:", 5000, 100, 60000)
         if not ok:
             return
-        # Confirm
-        if not QMessageBox.question(self, "Mass Analysis", f"Analyze {len(selected)} game(s)?"):
+        if QMessageBox.question(self, "Mass Analysis", f"Analyze {len(selected)} game(s)?",
+                                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
         self.batch = BatchAnalysis(self.engine_path, movetime)
         self.batch.progress.connect(lambda cur, tot: self.status_update.emit(f"Move {cur}/{tot}"))
         self.batch.analysis_complete.connect(lambda: QMessageBox.information(self, "Done", "Mass analysis complete."))
-        # Process games one by one? BatchAnalysis currently expects a single game.
-        # For now, we'll analyze the first selected game as example.
         headers, moves = self.db.get_game_moves(selected[0])
         from src.core.game_state import GameState
         state = GameState()
@@ -132,8 +133,9 @@ class GameDatabaseWidget(QWidget):
         selected = self._selected_indices()
         if not selected:
             return
-        if QMessageBox.question(self, "Delete", f"Delete {len(selected)} game(s)?"):
-            # For now, just remove from index; not deleting actual files.
+        reply = QMessageBox.question(self, "Delete", f"Delete {len(selected)} game(s)?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
             for i in sorted(selected, reverse=True):
                 del self.db.games[i]
             self._populate_table()

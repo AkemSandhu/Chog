@@ -3,7 +3,7 @@ import os
 from PySide6.QtWidgets import (
     QDialog, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QPushButton, QSpinBox, QCheckBox, QComboBox, QLineEdit, QLabel,
-    QFileDialog, QColorDialog, QDialogButtonBox
+    QFileDialog, QColorDialog, QDialogButtonBox, QWidget
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -14,6 +14,7 @@ class ConfigDialog(QDialog):
         self.setWindowTitle("General Configuration")
         self.resize(500, 400)
         self.config = self.load_config()
+        self.parent = parent
 
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -23,6 +24,7 @@ class ConfigDialog(QDialog):
         self._setup_sound_tab()
         self._setup_appearance_tab()
         self._setup_time_tab()
+        self._setup_clock_tab()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.save_and_accept)
@@ -39,6 +41,7 @@ class ConfigDialog(QDialog):
             "appearance/font_size": 12,
             "time/default_minutes": 10,
             "time/default_increment": 0,
+            "clock/auto_start": False,
         }
         try:
             with open("config/settings.json", "r") as f:
@@ -115,6 +118,17 @@ class ConfigDialog(QDialog):
         layout.addRow("Default increment (sec):", self.increment_spin)
         self.tabs.addTab(tab, "Time")
 
+    def _setup_clock_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        self.clock_auto = QCheckBox()
+        self.clock_auto.setChecked(self.config.get("clock/auto_start", False))
+        self.clock_auto.toggled.connect(lambda v: self.config.update({"clock/auto_start": v}))
+        layout.addRow("Start clock automatically:", self.clock_auto)
+        self.tabs.addTab(tab, "Clock")
+
     def save_and_accept(self):
         self.save_config()
+        if self.parent:
+            self.parent.board_widget.update()
         self.accept()

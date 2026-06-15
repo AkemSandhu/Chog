@@ -16,12 +16,7 @@ from src.books.book_engine import BookEngineHelper
 
 
 class BookEditorWidget(QWidget):
-    """Tree‑based opening book editor.
-
-    Displays stored lines as a tree. Each node shows the move and can be expanded.
-    """
-
-    move_selected = Signal(Move)  # emitted when user clicks a node
+    move_selected = Signal(Move)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,6 +32,8 @@ class BookEditorWidget(QWidget):
 
         # --- Toolbar ---
         toolbar = QHBoxLayout()
+        self.new_btn = QPushButton("New Book")
+        self.new_btn.clicked.connect(self._new_book)
         self.load_btn = QPushButton("Load Book...")
         self.load_btn.clicked.connect(self._load_book)
         self.save_btn = QPushButton("Save Book As...")
@@ -56,6 +53,7 @@ class BookEditorWidget(QWidget):
         self.autocomplete_btn.setEnabled(False)
 
         self.title_label = QLabel("No book loaded")
+        toolbar.addWidget(self.new_btn)
         toolbar.addWidget(self.load_btn)
         toolbar.addWidget(self.save_btn)
         toolbar.addWidget(self.import_btn)
@@ -104,6 +102,11 @@ class BookEditorWidget(QWidget):
         self.autocomplete_btn.setEnabled(self.engine_path is not None and self.book is not None)
 
     # ---- Book file actions ----
+    def _new_book(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Create New Book", "config/", "Chog Books (*.db)")
+        if path:
+            self.load_book_path(path)
+
     def _load_book(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open Book Database", "",
                                               "Chog Books (*.chb *.db);;All Files (*)")
@@ -112,7 +115,6 @@ class BookEditorWidget(QWidget):
         self.load_book_path(path)
 
     def load_book_path(self, path: str):
-        """Load a book directly from a file path."""
         if self.book:
             self.book.close()
         if path.endswith('.db'):
@@ -133,18 +135,15 @@ class BookEditorWidget(QWidget):
     def _rename_book(self):
         if not self.book:
             return
-        new_title, ok = QInputDialog.getText(self, "Rename Book", "New title:",
-                                              text=self.book.title)
+        new_title, ok = QInputDialog.getText(self, "Rename Book", "New title:", text=self.book.title)
         if ok and new_title:
             self.book.title = new_title
             self.title_label.setText(new_title)
 
-    # ---- Import / Export ----
     def _import_fpgn(self):
         if not self.book:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Open FPGN File", "",
-                                              "FPGN Files (*.fpgn);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open FPGN File", "", "FPGN Files (*.fpgn);;All Files (*)")
         if not path:
             return
         max_depth, ok = QInputDialog.getInt(self, "Max Depth", "Max moves per line:", 100, 1, 1000)
@@ -157,8 +156,7 @@ class BookEditorWidget(QWidget):
     def _export_chb(self):
         if not self.book:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export Chog Binary Book", "",
-                                              "Chog Book (*.chb);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Chog Binary Book", "", "Chog Book (*.chb);;All Files (*)")
         if not path:
             return
         chb = ChogBook(path)

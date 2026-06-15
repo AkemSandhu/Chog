@@ -69,15 +69,11 @@ class EngineMatchManager(QObject):
         if self.current_game % 2 == 0:
             white_engine = self.engine1_path
             black_engine = self.engine2_path
-            white_name = "Engine 1"
-            black_name = "Engine 2"
         else:
             white_engine = self.engine2_path
             black_engine = self.engine1_path
-            white_name = "Engine 2"
-            black_name = "Engine 1"
 
-        self.status_update.emit(f"Starting game {self.current_game+1}/{self.num_games} ({white_name} vs {black_name})")
+        self.status_update.emit(f"Starting game {self.current_game+1}/{self.num_games}")
 
         controller = GameController(
             self._dummy_board,
@@ -87,7 +83,9 @@ class EngineMatchManager(QObject):
             white_engine_path=white_engine,
             black_engine_path=black_engine,
             time_control_seconds=self.time_control,
-            increment_seconds=0
+            increment_seconds=0,
+            animation_enabled=False,
+            sound_manager=None
         )
         self.current_controller = controller
         controller.game_ended.connect(self._on_game_ended)
@@ -150,7 +148,6 @@ class EngineMatchManager(QObject):
 
         self.current_controller._stop_engines()
         self.current_controller = None
-
         self.current_game += 1
         self.timer.singleShot(500, self._run_next_game)
 

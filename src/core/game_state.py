@@ -11,6 +11,7 @@ class GameState:
         self.turn = turn
         self.move_stack: List[MoveRecord] = []
         self.position_history: Dict[str, int] = {}
+        self.position_keys: List[str] = []           # for accurate undo
         self.halfmove_clock = 0
         self.fullmove_number = 1
         self._record_position()
@@ -18,6 +19,7 @@ class GameState:
     def _record_position(self):
         key = self._position_key()
         self.position_history[key] = self.position_history.get(key, 0) + 1
+        self.position_keys.append(key)
 
     def _position_key(self) -> str:
         rows = []
@@ -74,6 +76,14 @@ class GameState:
         if self.turn == Colour.BLACK:
             self.fullmove_number -= 1
 
+        if self.position_keys:
+            old_key = self.position_keys.pop()
+            cnt = self.position_history.get(old_key, 0)
+            if cnt <= 1:
+                del self.position_history[old_key]
+            else:
+                self.position_history[old_key] = cnt - 1
+
 class MoveRecord:
     def __init__(self, move: Move, moved_piece: Piece, captured_piece: Optional[Piece],
                  prev_halfmove_clock: int):
@@ -85,7 +95,7 @@ class MoveRecord:
 def game_result(state: GameState) -> Optional[Tuple[str, Optional[int]]]:
     if not has_legal_moves(state.board, state.turn):
         winner = state.turn.opponent()
-        return (winner, None)
+        return ('white' if winner == Colour.WHITE else 'black', None)
     if state.position_history.get(state._position_key(), 0) >= 4:
         white_score = material_score(state.board, Colour.WHITE)
         black_score = material_score(state.board, Colour.BLACK)

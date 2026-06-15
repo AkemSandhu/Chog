@@ -1,3 +1,5 @@
+import os
+import shutil
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QCheckBox, QGroupBox, QFileDialog, QMessageBox,
@@ -6,7 +8,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from src.core.game_database import GameDatabase
 from src.io.fpgn import FPGNReader
-import os
 
 class ImportFPGNDialog(QDialog):
     def __init__(self, parent=None, target_folder: str = ""):
@@ -18,7 +19,6 @@ class ImportFPGNDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Source
         src_group = QGroupBox("Source")
         src_layout = QHBoxLayout(src_group)
         self.files_label = QLabel("No files selected")
@@ -28,7 +28,6 @@ class ImportFPGNDialog(QDialog):
         src_layout.addWidget(self.files_label, 1)
         layout.addWidget(src_group)
 
-        # Filter options
         flt_group = QGroupBox("Filter (optional)")
         flt_layout = QVBoxLayout(flt_group)
         self.white_edit = QLineEdit()
@@ -45,7 +44,6 @@ class ImportFPGNDialog(QDialog):
         flt_layout.addWidget(self.result_combo)
         layout.addWidget(flt_group)
 
-        # Remove options
         rem_group = QGroupBox("Remove elements")
         rem_layout = QVBoxLayout(rem_group)
         self.rem_variations = QCheckBox("Variations")
@@ -58,7 +56,6 @@ class ImportFPGNDialog(QDialog):
         rem_layout.addWidget(self.rem_analysis)
         layout.addWidget(rem_group)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
@@ -79,7 +76,6 @@ class ImportFPGNDialog(QDialog):
         if not self.files:
             QMessageBox.warning(self, "No Files", "Select files to import.")
             return
-        # Build filter function
         white = self.white_edit.text().strip()
         black = self.black_edit.text().strip()
         result = self.result_combo.currentText() if self.result_combo.currentText() != "Any" else ""
@@ -93,12 +89,15 @@ class ImportFPGNDialog(QDialog):
                 return False
             return True
 
-        # Import into target folder (simplified: copy files)
         if self.target_folder:
             os.makedirs(self.target_folder, exist_ok=True)
-            import shutil
             for f in self.files:
                 dest = os.path.join(self.target_folder, os.path.basename(f))
-                shutil.copy(f, dest)
+                if os.path.abspath(f) == os.path.abspath(dest):
+                    continue
+                try:
+                    shutil.copy(f, dest)
+                except shutil.SameFileError:
+                    pass
         QMessageBox.information(self, "Done", f"Imported {len(self.files)} file(s).")
         self.accept()

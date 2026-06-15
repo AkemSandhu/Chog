@@ -11,7 +11,7 @@ class MoveModel(QAbstractTableModel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._moves: List[Tuple[str, bool, str, str, str]] = []  # (move_str, is_white, comment, score, indicators)
+        self._moves: List[Tuple[str, bool, str, str, str]] = []
 
     def add_move(self, move_str: str, is_white: bool, comment: str = "",
                  score: str = "", indicators: str = ""):
@@ -78,10 +78,8 @@ class MoveModel(QAbstractTableModel):
 
 
 class MoveDelegate(QStyledItemDelegate):
-    """Custom delegate for painting move cells with optional score and indicators."""
     def paint(self, painter, option, index):
         painter.save()
-        # Selection background
         if option.state & QStyle.State_Selected:
             painter.fillRect(option.rect, QColor("#3399ff"))
         else:
@@ -96,19 +94,16 @@ class MoveDelegate(QStyledItemDelegate):
         font.setPointSize(10)
         painter.setFont(font)
 
-        # Draw move text
         if move_str:
             painter.setPen(Qt.black)
             painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, move_str)
 
-        # Draw score on right side
         if score:
             painter.setPen(QColor("#555555"))
             font.setPointSize(8)
             painter.setFont(font)
             painter.drawText(rect, Qt.AlignRight | Qt.AlignVCenter, score)
 
-        # Draw indicators (icons not implemented, just text)
         if indicators:
             painter.setPen(QColor("#888888"))
             font.setPointSize(7)
@@ -123,14 +118,15 @@ class MoveDelegate(QStyledItemDelegate):
 
 
 class MoveListWidget(QTableView):
-    move_selected = Signal(int)           # ply index (0-based)
+    move_selected = Signal(int)
     takeback_requested = Signal()
     delete_move_requested = Signal(int)
     new_variation_requested = Signal()
-    switch_variation_requested = Signal(object)
+    switch_variation_requested = Signal(object)   # MoveNode
     promote_variation_requested = Signal(object)
     save_analysis_requested = Signal(str, object, int, int)
     load_analysis_requested = Signal(str, str)
+    list_variations_requested = Signal(int)      # ply
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -196,6 +192,8 @@ class MoveListWidget(QTableView):
         new_var_action = QAction("New variation from here", self)
         new_var_action.triggered.connect(self.new_variation_requested.emit)
         menu.addAction(new_var_action)
+        # Let the controller add existing variation entries
+        self.list_variations_requested.emit(ply)
         menu.addSeparator()
         analysis_menu = menu.addMenu("Analysis")
         save_action = QAction("Save current engine analysis...", self)

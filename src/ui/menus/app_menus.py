@@ -11,11 +11,13 @@ class FileMenu(RootMenu):
         sm = self.main_window.shortcuts_manager
         self.option("new_game", "&New Game", icons.icon_new_game(), shortcut=sm.get("new_game"))
         self.option("load_game", "&Load Game...", icons.icon_load_game(), shortcut=sm.get("load_game"))
+        self.option("save_game", "&Save Game", icons.icon_book_save())
         self.option("exit", "E&xit", icons.icon_exit(), shortcut=sm.get("exit"), sep_before=True)
 
     def execute(self, key):
         if key == "new_game": self.controller.start_new_game()
         elif key == "load_game": self.main_window._load_game()
+        elif key == "save_game": self.controller.save_game()
         elif key == "exit": self.main_window.close()
 
 class ViewMenu(RootMenu):
@@ -43,10 +45,12 @@ class ReviewMenu(RootMenu):
         sm = self.main_window.shortcuts_manager
         self.option("prev_game", "Previous Game", icons.icon_prev_game(), shortcut=sm.get("prev_game"))
         self.option("next_game", "Next Game", icons.icon_next_game(), shortcut=sm.get("next_game"))
+        self.option("close_review", "Close Review", icons.icon_exit())
 
     def execute(self, key):
         if key == "prev_game": self.controller.previous_game()
         elif key == "next_game": self.controller.next_game()
+        elif key == "close_review": self.controller.close_review()
 
 class EngineMenu(RootMenu):
     def __init__(self, main_window):
