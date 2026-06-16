@@ -2,12 +2,13 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QDockWidget, QMenuBar, QStatusBar, QLabel,
     QMessageBox, QFileDialog, QInputDialog,
-    QSystemTrayIcon, QMenu
+    QSystemTrayIcon, QMenu, QDialog, QComboBox, QPushButton
 )
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtCore import Qt
 from typing import Optional
 import json
+import os
 
 from src.ui.board_widget import BoardWidget
 from src.ui.move_list import MoveListWidget
@@ -327,14 +328,51 @@ class MainWindow(QMainWindow):
             temporary_message(self, "Engine configuration saved.")
 
     def _set_analysis_engine(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Analysis Engine", "",
-                                              "Executable Files (*);;All Files (*)")
-        if path:
-            self.analysis_panel.set_engine_path(path)
-            self.game_database.set_engine_path(path)
-            self.status_label.setText(f"Analysis engine set: {path}")
-            self.book_editor.set_engine_path(path)
-            temporary_message(self, "Analysis engine set.", 1500)
+        """Let the user pick a previously configured engine for analysis."""
+        try:
+            with open("config/engines.json", "r") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        engines = data.get("engines", {})
+        if not engines:
+            # Fallback to file dialog if no engines configured
+            path, _ = QFileDialog.getOpenFileName(self, "Select Analysis Engine", "",
+                                                  "Executable Files (*);;All Files (*)")
+            if path:
+                self._apply_analysis_engine(path)
+            return
+
+        names = list(engines.keys())
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Analysis Engine")
+        layout = QVBoxLayout(dlg)
+        label = QLabel("Choose an engine for analysis:")
+        combo = QComboBox()
+        combo.addItems(names)
+        layout.addWidget(label)
+        layout.addWidget(combo)
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        if dlg.exec() == QDialog.Accepted:
+            name = combo.currentText()
+            path = engines[name].get("path", "")
+            if path:
+                self._apply_analysis_engine(path)
+
+    def _apply_analysis_engine(self, path: str):
+        """Apply the selected engine path to all components."""
+        self.analysis_panel.set_engine_path(path)
+        self.game_database.set_engine_path(path)
+        self.status_label.setText(f"Analysis engine set: {os.path.basename(path)}")
+        self.book_editor.set_engine_path(path)
+        temporary_message(self, "Analysis engine set.", 1500)
 
     def _load_game(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open FPGN File", "games/",

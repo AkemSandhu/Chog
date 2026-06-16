@@ -7,8 +7,8 @@ import os
 
 from src.core.board import Board
 from src.core.pieces import Colour, PieceType, Piece, PIECE_SYMBOLS, PROMOTABLE_TYPES, PROMOTION_TARGETS
-from src.core.movegen import Move
-from src.core.rules import legal_moves, _is_promotion_zone, material_score
+from src.core.movegen import Move, _is_promotion_zone
+from src.core.rules import legal_moves, material_score
 from src.core.game_state import GameState, game_result
 from src.core.variations import MoveNode
 from src.io.fpgn import FPGNWriter, move_to_fpgn, FPGNReader
@@ -103,8 +103,9 @@ class GameController(QObject):
         self.loaded_games: List[Tuple[str, MoveNode]] = []
         self.current_game_index: int = -1
 
-        self._adding_variation = False
-        self._variation_parent = None
+        # Variation mode: when True, all moves go as variations of _variation_parent
+        self._in_variation = False
+        self._variation_parent: Optional[MoveNode] = None
 
     # -----------------------------------------------------------------
     def start_new_game(self):
@@ -119,6 +120,8 @@ class GameController(QObject):
         self.move_list.clear_moves()
         self.root = MoveNode(None, None)
         self.current_node = self.root
+        self._in_variation = False
+        self._variation_parent = None
         self.white_clock.reset()
         self.black_clock.reset()
         self.white_clock.set_time(self.time_control, self.increment)
@@ -165,10 +168,17 @@ class GameController(QObject):
         })
 
     def save_game(self):
+        """Manually save the current game, replaying to get correct piece types."""
         if not self.move_history:
             self.status_update.emit("No moves to save.")
             return
         self._init_recording()
+        temp_state = GameState()
+        for move in self.move_history:
+            piece = temp_state.board.get_piece(move.from_r, move.from_c)
+            ptype = piece.ptype if piece else PieceType.PAWN
+            self.fpgn_writer.add_move(move, ptype, comment="")
+            temp_state.make_move(move)
         result = game_result(self.state)
         result_str = "*"
         if result is not None:
@@ -178,7 +188,7 @@ class GameController(QObject):
                 result_str = "0-1"
             elif result[0] == 'draw':
                 result_str = "1/2-1/2"
-        self.fpgn_writer.write_tree(self.root, result_str)
+        self.fpgn_writer.add_result(result_str)
         self.fpgn_writer.close()
         self.status_update.emit("Game saved.")
 
@@ -309,17 +319,16 @@ class GameController(QObject):
             self.move_history.append(move)
             self.comments.append(comment)
             indicator = ""
-            if self._adding_variation:
+            if self._in_variation:
                 var_node = parent_node.add_variation(move)
                 self.current_node = var_node
-                self._adding_variation = False
+                self._variation_parent = parent_node  # stay in variation mode
                 indicator = "V"
             else:
                 new_node = parent_node.add_main_move(move)
                 self.current_node = new_node
-                if parent_node.children:
-                    if self.move_indicators:
-                        self.move_indicators[-1] = "V"
+                if parent_node.children and self.move_indicators:
+                    self.move_indicators[-1] = "V"
             self.move_indicators.append(indicator)
             self.move_list.add_move(move_str, piece.colour == Colour.WHITE, comment, "", indicator)
 
@@ -467,10 +476,37 @@ class GameController(QObject):
             self._start_turn()
 
     # -----------------------------------------------------------------
+    # Variation management
+    # -----------------------------------------------------------------
     def add_variation(self):
-        self._adding_variation = True
+        """Enter variation mode. All subsequent moves become a variation of the current node."""
+        self._in_variation = True
         self._variation_parent = self.current_node
-        self.status_update.emit("Play the moves for the new variation.")
+        self.status_update.emit("Variation mode ON. Right-click a move and choose 'Return to main line' to exit.")
+
+    def return_to_main_line(self):
+        """Exit variation mode and return to the main line."""
+        self._in_variation = False
+        self._variation_parent = None
+        # Replay main line from root
+        self.state = GameState()
+        node = self.root.next_main
+        self.move_history.clear()
+        self.comments.clear()
+        self.move_indicators.clear()
+        self.move_list.clear_moves()
+        while node:
+            self.state.make_move(node.move)
+            self.move_history.append(node.move)
+            move_str = move_to_fpgn(node.move, PieceType.PAWN)
+            self.move_list.add_move(move_str, node.move and self.state.turn == Colour.BLACK, "", "", "")
+            self.comments.append("")
+            self.move_indicators.append("")
+            self.current_node = node
+            node = node.next_main
+        self.board_widget.set_board(self.state.board)
+        self.position_changed.emit()
+        self.status_update.emit("Returned to main line.")
 
     def switch_variation(self, node: MoveNode):
         self.state = GameState()
@@ -539,6 +575,11 @@ class GameController(QObject):
             label = " ".join(move_to_uci(m) for m in pv_list[:5])
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, n=var_node: self.switch_variation(n))
+        menu.addSeparator()
+        # Option to return to main line
+        if self._in_variation:
+            ret_action = menu.addAction("Return to main line")
+            ret_action.triggered.connect(self.return_to_main_line)
         menu.exec(QCursor.pos())
 
     # -----------------------------------------------------------------
@@ -669,6 +710,8 @@ class GameController(QObject):
         self.move_list.clear_moves()
         self.root = root
         self.current_node = root
+        self._in_variation = False
+        self._variation_parent = None
         self.white_clock.stop()
         self.black_clock.stop()
         self.game_active = False

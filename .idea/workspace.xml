@@ -1,27 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="b30fda5e-d20e-46f4-863a-c8e60ef64c39" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/src/core/evaluation.py" afterDir="false" />
+    <list default="true" id="b30fda5e-d20e-46f4-863a-c8e60ef64c39" name="Changes" comment="gui">
+      <change afterPath="$PROJECT_DIR$/src/core/evaluate.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/engines/classic/main.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/engines/classic/move_order.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/engines/classic/search.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/engines/classic/transposition.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/books/book_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/books/book_engine.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/core/game_state.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/game_state.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/core/game_database.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/game_database.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/core/opening_book.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/opening_book.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/core/rules.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/core/rules.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/engine/batch_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/engine/batch_analysis.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/engine/match_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/engine/match_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/engine/training_runner.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/engine/training_runner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/engine/manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/engine/manager.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/game_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/game_controller.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/io/fpgn.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/io/fpgn.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ui/analysis_panel.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/analysis_panel.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/ui/board_widget.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/board_widget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/book_editor.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/book_editor.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/config_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/config_dialog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/game_database_widget.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/game_database_widget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/import_fpgn_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/import_fpgn_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/ui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/menus/app_menus.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/menus/app_menus.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/menus/base_menu.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/menus/base_menu.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/menus/tools_menu.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/menus/tools_menu.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/move_list.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/move_list.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -59,21 +55,22 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.game_controller.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.game_controller.executor": "Run",
+    "Python.main.executor": "Run",
+    "Python.main_window.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "master",
+    "nodejs_package_manager_path": "npm",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="C:\Users\akems\PycharmProjects\Chog\src\ui\menus" />
@@ -100,7 +97,9 @@
       <workItem from="1781455091009" duration="8675000" />
       <workItem from="1781472475355" duration="6184000" />
       <workItem from="1781532273372" duration="17632000" />
-      <workItem from="1781556169932" duration="793000" />
+      <workItem from="1781556169932" duration="851000" />
+      <workItem from="1781558881884" duration="1460000" />
+      <workItem from="1781576367114" duration="4893000" />
     </task>
     <task id="LOCAL-00001" summary="gui">
       <option name="closed" value="true" />
@@ -110,7 +109,15 @@
       <option name="project" value="LOCAL" />
       <updated>1781533791098</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="gui">
+      <option name="closed" value="true" />
+      <created>1781557915060</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1781557915060</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -123,6 +130,6 @@
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Chog$main_window.coverage" NAME="main_window Coverage Results" MODIFIED="1781415110794" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src/ui" />
     <SUITE FILE_PATH="coverage/Chog$game_controller.coverage" NAME="game_controller Coverage Results" MODIFIED="1781544200061" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
-    <SUITE FILE_PATH="coverage/Chog$main.coverage" NAME="main Coverage Results" MODIFIED="1781552445217" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/Chog$main.coverage" NAME="main Coverage Results" MODIFIED="1781580504109" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
   </component>
 </project>

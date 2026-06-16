@@ -39,7 +39,7 @@ class BatchAnalysis(QObject):
             if not loop:
                 self.error_occurred.emit("Engine did not respond")
                 break
-            best = self.engine._current_bestmove
+            best = self.engine.current_bestmove          # <-- property
             self.move_analyzed.emit(i, best)
             state.make_move(move)
         self.engine.close()
@@ -54,4 +54,4 @@ class BatchAnalysis(QObject):
         timer.start(self.movetime + 5000)
         loop.exec()
         timer.stop()
-        return True if self.engine._current_bestmove else False
+        return True if self.engine.current_bestmove else False   # <-- property

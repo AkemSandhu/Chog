@@ -50,8 +50,8 @@ class GameDatabase:
                             pv = " ".join(move_to_uci(m) for m in moves[:8])  # first 8 moves
                             rec.first_moves = pv
                             self.games.append(rec)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Error reading {full_path}: {e}")   # <-- log instead of silent pass
         # Save index
         self._save_index()
         return len(self.games)

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import List, Optional
 from .pieces import Piece, PieceType, Colour, PROMOTABLE_TYPES
 from .board import Board, ROWS, COLS
-from .movegen import pseudo_legal_moves, Move
+from .movegen import pseudo_legal_moves, Move, _is_promotion_zone
 
 def _piece_can_move_from(board: Board, row: int, col: int, ptype: PieceType, colour: Colour) -> bool:
     return _piece_can_move_check(board, row, col, ptype, colour)
@@ -89,9 +89,6 @@ def _apply_move_to_board(board: Board, move: Move):
     if move.promotion is not None:
         piece = Piece(move.promotion, piece.colour)
     board.set_piece(move.to_r, move.to_c, piece)
-
-def _is_promotion_zone(row: int, colour: Colour) -> bool:
-    return (colour == Colour.WHITE and row >= 8) or (colour == Colour.BLACK and row <= 1)
 
 def material_score(board: Board, colour: Colour) -> int:
     score = 0

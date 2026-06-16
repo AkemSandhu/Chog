@@ -4,6 +4,7 @@ from enum import Enum, auto
 import os
 import psutil
 import time
+import shlex
 
 from src.engine.protocol import (
     uci_to_move, parse_info_line, parse_bestmove_line, parse_ponder_move,
@@ -30,7 +31,13 @@ class EngineManager(QObject):
 
     def __init__(self, engine_path: str, parent=None):
         super().__init__(parent)
-        self.path_exe = engine_path
+        if ' ' in engine_path:
+            parts = shlex.split(engine_path)
+            self.path_exe = parts[0]
+            self.args = parts[1:]
+        else:
+            self.path_exe = engine_path
+            self.args = []
         self.process: Optional[QProcess] = None
         self._state = EngineState.OFF
         self._buffer = ""
@@ -44,6 +51,8 @@ class EngineManager(QObject):
         self._pondering = False
         self._ponderhit_sent = False
 
+        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
     @property
     def state(self):
         return self._state
@@ -52,22 +61,34 @@ class EngineManager(QObject):
     def is_thinking(self):
         return self._state in (EngineState.THINKING, EngineState.PONDERING)
 
+    @property
+    def current_bestmove(self):
+        return self._current_bestmove
+
     def start(self):
         if self.process is not None:
             self.close()
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.SeparateChannels)
         self.process.setProgram(self.path_exe)
+        if self.args:
+            self.process.setArguments(self.args)
+        self.process.setWorkingDirectory(self.project_root)
+
+        env = self.process.processEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        self.process.setProcessEnvironment(env)
+
         self.process.readyReadStandardOutput.connect(self._read_stdout)
         self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(self._on_finished)
 
         self.process.start()
-        if not self.process.waitForStarted(3000):
-            self.error_occurred.emit(f"Engine {self.path_exe} failed to start")
+        if not self.process.waitForStarted(5000):
+            self.error_occurred.emit(f"Engine '{self.path_exe}' failed to start. Check the path and ensure Python is installed.")
             return
         self._state = EngineState.INITIALIZING
-        self._send_command("chog")   # CUEP handshake
+        self._send_command("chog")
 
     def close(self):
         if self._state == EngineState.OFF:
@@ -125,7 +146,7 @@ class EngineManager(QObject):
             self._send_command("isready")
 
     def set_position(self, fen_or_moves, moves_list: List[str] = None):
-        if isinstance(fen_or_moves, list):  # list of Move
+        if isinstance(fen_or_moves, list):
             cmd = build_position_command_from_moves(fen_or_moves)
         else:
             cmd = build_position_command_fen(fen_or_moves, moves_list)
@@ -147,7 +168,6 @@ class EngineManager(QObject):
             self._move_stop_timer.start(movetime + 200)
 
     def ponderhit(self):
-        """Called when the opponent has moved; switches from pondering to thinking."""
         if self._state == EngineState.PONDERING:
             self._send_command("ponderhit")
             self._state = EngineState.THINKING
@@ -166,7 +186,6 @@ class EngineManager(QObject):
     def send_command(self, command: str):
         self._send_command(command)
 
-    # ----------------------- Internal -----------------------
     def _send_command(self, cmd: str):
         if self.process and self.process.state() == QProcess.Running:
             self.process.write((cmd + "\n").encode())
@@ -186,7 +205,6 @@ class EngineManager(QObject):
     def _process_line(self, line: str):
         if not line:
             return
-        # Handshake
         if self._state == EngineState.INITIALIZING:
             if line == "chogok":
                 self._state = EngineState.READY
@@ -195,8 +213,11 @@ class EngineManager(QObject):
                 self._pending_options.clear()
                 self._set_option("MultiPV", str(self._multipv))
                 self._send_command("isready")
+            elif line == "readyok":               # allow early readyok
+                self._state = EngineState.READY
+                self.engine_ready.emit()
             elif line.startswith("id ") or line.startswith("option "):
-                pass  # store engine info if desired
+                pass
         elif self._state == EngineState.READY:
             if line == "readyok":
                 self.engine_ready.emit()
@@ -209,11 +230,9 @@ class EngineManager(QObject):
                 best = parse_bestmove_line(line)
                 if best:
                     self._current_bestmove = best
-                    # Check for ponder move
                     ponder_move = parse_ponder_move(line)
                     if ponder_move and self._pondering:
-                        # Engine expects us to use ponder move for pondering
-                        pass  # we store it; next go with ponder will use it
+                        pass
                     self._state = EngineState.READY
                     self._move_stop_timer.stop()
                     self.bestmove_received.emit(best)

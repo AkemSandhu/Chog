@@ -1,4 +1,5 @@
 import os
+import time
 from typing import List, Tuple, Optional
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import (QPainter, QColor, QFont, QPen, QBrush, QPixmap,
@@ -323,7 +324,6 @@ class BoardWidget(QWidget):
             painter.drawEllipse(QPointF(x + marker.radius, y + marker.radius), marker.radius, marker.radius)
 
     def _animation_step(self):
-        import time
         if self._anim_start_time == 0:
             self._anim_start_time = time.monotonic()
         elapsed = (time.monotonic() - self._anim_start_time) * 1000

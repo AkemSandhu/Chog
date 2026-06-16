@@ -85,11 +85,16 @@ class OpeningBook:
         existing = self.get_all_lines()
         if new_xpv in existing:
             return
+        # Remove any line that is a strict prefix of the new one (shorter line)
         to_remove = []
         for xpv in existing:
             if new_xpv.startswith(xpv + " ") or new_xpv == xpv:
                 if len(new_xpv) > len(xpv):
                     to_remove.append(xpv)
+        # Also remove lines that are extensions of the new one (new line is a prefix)
+        for xpv in existing:
+            if xpv.startswith(new_xpv + " ") and xpv != new_xpv:
+                to_remove.append(xpv)
         for old_xpv in to_remove:
             self.remove_line_by_xpv(old_xpv)
         self.conn.execute("INSERT INTO lines(xpv) VALUES(?)", (new_xpv,))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 from typing import List, Dict, Tuple, Optional, TextIO
-from src.core.pieces import PieceType, PIECE_SYMBOLS
+from src.core.pieces import PieceType, PIECE_SYMBOLS, PROMOTABLE_TYPES
 from src.core.movegen import Move
 from src.core.variations import MoveNode
 
@@ -12,36 +12,53 @@ def _col_to_char(c: int) -> str:
     return chr(ord('a') + c)
 
 def move_to_fpgn(move: Move, moved_piece_type: PieceType) -> str:
+    """
+    Convert a Move to FPGN long‑algebraic string.
+    - Pawn promotions: =O / =U
+    - Non‑pawn promotions: just = (bare equals sign)
+    - All other moves: no suffix
+    """
     base = f"{_col_to_char(move.from_c)}{move.from_r}{_col_to_char(move.to_c)}{move.to_r}"
-    if moved_piece_type == PieceType.PAWN and move.promotion is not None:
-        base += f"={PIECE_SYMBOLS[move.promotion]}"
+    if move.promotion is not None:
+        if moved_piece_type == PieceType.PAWN:
+            base += f"={PIECE_SYMBOLS[move.promotion]}"
+        elif moved_piece_type in PROMOTABLE_TYPES:
+            base += "="
     return base
 
 def fpgn_to_move(fpgn_str: str) -> Optional[Move]:
+    """
+    Parse a long‑algebraic move string. Returns a Move.
+    - e2e3        → normal move
+    - e7e8=O      → pawn promotion to Gold
+    - e8e9=       → non‑pawn promotion (placeholder BERS, resolved later)
+    """
     fpgn_str = fpgn_str.strip()
     fpgn_str = re.sub(r'[+#]', '', fpgn_str)
-    match = re.match(r'([a-j])(\d)([a-j])(\d)(?:=(\w+))?', fpgn_str)
+    match = re.match(r'([a-j])(\d)([a-j])(\d)(?:=(\w*))?', fpgn_str)
     if not match:
         return None
     fc, fr, tc, tr = match.group(1), match.group(2), match.group(3), match.group(4)
-    promo_str = match.group(5)
+    promo_str = match.group(5)   # may be None, empty string, or one letter
     from_c = _col_from_char(fc)
     from_r = int(fr)
     to_c = _col_from_char(tc)
     to_r = int(tr)
     promotion = None
-    if promo_str:
-        symbol = promo_str.upper()
-        for pt, sym in PIECE_SYMBOLS.items():
-            if sym == symbol:
-                promotion = pt
-                break
+    if promo_str is not None:        # an '=' was present
+        if promo_str == "":          # bare '=' → non‑pawn promotion
+            promotion = PieceType.BERS   # placeholder (will be resolved later)
+        else:                        # e.g. 'O', 'U' → pawn promotion
+            symbol = promo_str.upper()
+            for pt, sym in PIECE_SYMBOLS.items():
+                if sym == symbol:
+                    promotion = pt
+                    break
     return Move(from_r, from_c, to_r, to_c, promotion)
 
 
 class Token:
     TAG, MOVE, NAG, COMMENT, VARIATION_START, VARIATION_END, RESULT, EOF = range(8)
-
     def __init__(self, type_: int, value: str = ""):
         self.type = type_
         self.value = value
@@ -93,7 +110,7 @@ def tokenize_fpgn(text: str) -> List[Token]:
             j = i + 4
             if j < n and text[j] == '=':
                 j += 1
-                while j < n and text[j].isalpha():
+                if j < n and text[j].isalpha():
                     j += 1
             token_str = text[i:j]
             tokens.append(Token(Token.MOVE, token_str))
@@ -135,7 +152,6 @@ class FPGNParser:
             if match:
                 headers[match.group(1)] = match.group(2)
             self.advance()
-
         root = MoveNode(None, None)
         self._parse_movetext(root)
         return headers, root
@@ -269,38 +285,6 @@ class FPGNWriter:
             self.file.write(f"{self.move_number}. {self.pending_white} ")
             self.pending_white = None
         self.file.write(f"{result}\n")
-
-    def write_tree(self, root: MoveNode, result: str = "*"):
-        lines = []
-        self._collect_tree(root.next_main, lines, 1, True)
-        if lines:
-            last = lines[-1].rstrip()
-            lines[-1] = last + f" {result}\n"
-        else:
-            self.file.write(f"{result}\n")
-            return
-        self.file.write("".join(lines))
-
-    def _collect_tree(self, node: MoveNode, lines: list, move_number: int, is_white: bool):
-        if node is None:
-            return
-        move_str = move_to_fpgn(node.move, PieceType.PAWN)
-        if is_white:
-            line = f"{move_number}. {move_str} "
-        else:
-            line = f"{move_str} "
-            move_number += 1
-
-        # Write each variation (recursively) – pass 'child', not child.next_main
-        for child in node.children:
-            var_lines = []
-            self._collect_tree(child, var_lines, move_number, not is_white)
-            if var_lines:
-                line += "( " + " ".join(var_lines).strip() + " ) "
-
-        lines.append(line)
-        next_number = move_number + 1 if is_white else move_number
-        self._collect_tree(node.next_main, lines, next_number, not is_white)
 
     def close(self):
         if self.file and not self.file.closed:
