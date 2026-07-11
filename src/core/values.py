@@ -1,16 +1,8 @@
-"""
-Enhanced evaluation for Chog.
-Material, PST, mobility, pawn structure, king safety, threats, passed pawns, initiative.
-All reading done from the flat grid for speed.
-"""
-from src.core.board import Board, ROWS, COLS
-from src.core.pieces import PieceType, Colour
-from src.core.pawns import pawn_structure_score, passed_pawn_score
-from src.core.movegen import pseudo_legal_moves_raw
+from src.core.pieces import PieceType
 
-# -------------------------------------------------------------------------
-# Material values (centipawns)
-# -------------------------------------------------------------------------
+ROWS = 10
+COLS = 10
+
 PIECE_VALUES = {
     PieceType.PAWN:     100,
     PieceType.LANCE:    200,
@@ -23,7 +15,7 @@ PIECE_VALUES = {
     PieceType.BISHOP:   350,
     PieceType.ROOK:     500,
     PieceType.QUEEN:    900,
-    PieceType.KING:       0,
+    PieceType.KING:     0,
     PieceType.KNIGHT:   300,
     PieceType.BERS:     550,
     PieceType.DRAGON:   600,
@@ -31,30 +23,7 @@ PIECE_VALUES = {
     PieceType.HUNTER:   650,
 }
 
-# -------------------------------------------------------------------------
-# Mobility bonuses (centipawns per legal move for each piece type)
-# -------------------------------------------------------------------------
-MOBILITY_BONUS = {
-    PieceType.HORSE:    3,
-    PieceType.ELEPHANT: 3,
-    PieceType.EAGLE:    4,
-    PieceType.BISHOP:   4,
-    PieceType.ROOK:     2,
-    PieceType.QUEEN:    1,
-    PieceType.BERS:     3,
-    PieceType.DRAGON:   4,
-    PieceType.GOLD:     2,
-    PieceType.HUNTER:   3,
-    PieceType.GENERAL:  4,
-    PieceType.WAZIR:    2,
-    PieceType.FERZ:     2,
-    PieceType.KNIGHT:   3,
-    PieceType.LANCE:    2,
-}
-
-# -------------------------------------------------------------------------
-# Original piece‑square tables (10x10)
-# -------------------------------------------------------------------------
+# Piece‑square tables (White’s perspective, row 0 = home rank)
 PAWN_PST = [
     [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0],
     [ 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
@@ -230,10 +199,7 @@ DRAGON_PST = BERS_PST
 GOLD_PST   = BERS_PST
 HUNTER_PST = BERS_PST
 
-# -------------------------------------------------------------------------
-# Build flattened PST arrays for direct indexed access
-# -------------------------------------------------------------------------
-_PST = {
+PST = {
     PieceType.PAWN:     PAWN_PST,
     PieceType.LANCE:    LANCE_PST,
     PieceType.HORSE:    HORSE_PST,
@@ -252,124 +218,3 @@ _PST = {
     PieceType.HUNTER:   HUNTER_PST,
     PieceType.KING:     KING_PST_MG,
 }
-
-def _mirror_and_flatten(table):
-    """Return two 100-element lists: White view and Black view (mirrored ranks)."""
-    w_flat = [0] * 100
-    b_flat = [0] * 100
-    for r in range(10):
-        for c in range(10):
-            idx = r * 10 + c
-            w_flat[idx] = table[r][c]
-            b_flat[idx] = table[9 - r][c]
-    return w_flat, b_flat
-
-_PST_FLAT_W = {}
-_PST_FLAT_B = {}
-for pt, table in _PST.items():
-    w, b = _mirror_and_flatten(table)
-    _PST_FLAT_W[pt] = w
-    _PST_FLAT_B[pt] = b
-
-# -------------------------------------------------------------------------
-# King safety helpers
-# -------------------------------------------------------------------------
-def _king_zone(kr: int, kc: int) -> set:
-    """Squares within 2 of the king."""
-    zone = set()
-    for dr in range(-2, 3):
-        for dc in range(-2, 3):
-            r, c = kr + dr, kc + dc
-            if 0 <= r < ROWS and 0 <= c < COLS:
-                zone.add((r, c))
-    return zone
-
-def king_safety_score(board: Board, colour: Colour) -> int:
-    """Penalty for enemy pieces near our king."""
-    opp = colour.opponent()
-    ks = board.find_king(colour)
-    if ks is None:
-        return 0
-    kr, kc = ks
-    zone = _king_zone(kr, kc)
-    attack_weight = 0
-    for idx, val in enumerate(board.grid):
-        if val == 0:
-            continue
-        if Colour(val & 1) != opp:
-            continue
-        r, c = divmod(idx, COLS)
-        if (r, c) in zone:
-            attack_weight += PIECE_VALUES.get(PieceType(val >> 1), 0) // 50
-    return -attack_weight * 15
-
-# -------------------------------------------------------------------------
-# Threat evaluation (simplified – we rely on mobility for now)
-# -------------------------------------------------------------------------
-def threat_score(board: Board, colour: Colour) -> int:
-    """Bonus for attacking enemy pieces. Kept for future extension."""
-    return 0   # mobility already covers active piece placement
-
-# -------------------------------------------------------------------------
-# Initiative: side with more legal moves gets a small bonus
-# -------------------------------------------------------------------------
-def initiative_score(board: Board) -> int:
-    white_moves = len(pseudo_legal_moves_raw(board, Colour.WHITE))
-    black_moves = len(pseudo_legal_moves_raw(board, Colour.BLACK))
-    return (white_moves - black_moves) * 3
-
-# -------------------------------------------------------------------------
-# Main evaluate function
-# -------------------------------------------------------------------------
-def evaluate(board: Board) -> int:
-    """Static evaluation in centipawns from White's perspective."""
-    grid = board.grid
-    score = 0
-
-    # ---- Material + Piece‑Square Tables ----
-    for idx, val in enumerate(grid):
-        if val == 0:
-            continue
-        ptype = PieceType(val >> 1)
-        col = Colour(val & 1)
-        mat = PIECE_VALUES.get(ptype, 0)
-        pst = _PST_FLAT_W[ptype][idx] if col == Colour.WHITE else _PST_FLAT_B[ptype][idx]
-        inc = mat + pst
-        if col == Colour.WHITE:
-            score += inc
-        else:
-            score -= inc
-
-    # ---- Mobility ----
-    mob_w = 0
-    mob_b = 0
-    for raw in pseudo_legal_moves_raw(board, Colour.WHITE):
-        fr, fc, _, _, _ = raw
-        piece_val = grid[fr * COLS + fc]
-        if piece_val:
-            pt = PieceType(piece_val >> 1)
-            mob_w += MOBILITY_BONUS.get(pt, 0)
-    for raw in pseudo_legal_moves_raw(board, Colour.BLACK):
-        fr, fc, _, _, _ = raw
-        piece_val = grid[fr * COLS + fc]
-        if piece_val:
-            pt = PieceType(piece_val >> 1)
-            mob_b += MOBILITY_BONUS.get(pt, 0)
-    score += mob_w - mob_b
-
-    # ---- Pawn structure ----
-    score += pawn_structure_score(board, Colour.WHITE)
-    score -= pawn_structure_score(board, Colour.BLACK)
-
-    # ---- Passed pawns ----
-    score += passed_pawn_score(board, Colour.WHITE)
-    score -= passed_pawn_score(board, Colour.BLACK)
-
-    # ---- King safety ----
-    score += king_safety_score(board, Colour.WHITE)
-    score -= king_safety_score(board, Colour.BLACK)
-
-    # ---- Initiative ----
-    score += initiative_score(board)
-
-    return score

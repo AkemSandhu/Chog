@@ -104,7 +104,17 @@ def build_loadweights_command(filepath: str) -> str:
 # ----------------------------------------------------------------------
 #  Response parsers
 # ----------------------------------------------------------------------
+# Tokens that are not part of a PV – they stop PV parsing.
+_PV_STOP_TOKENS = {
+    "depth", "score", "nodes", "nps", "time", "multipv",
+    "seldepth", "hashfull", "tbhits", "cpuload", "string",
+    "currmove", "currmovenumber"
+}
+
 def parse_info_line(line: str) -> Optional[Dict]:
+    """Parse a CUEP 'info' line. Returns a dictionary with keys like
+    depth, score_cp, score_mate, pv (list of strings), multipv, etc.
+    """
     if not line.startswith("info "):
         return None
     parts = line[5:].split()
@@ -113,25 +123,31 @@ def parse_info_line(line: str) -> Optional[Dict]:
     while i < len(parts):
         token = parts[i]
         if token == "depth":
-            i += 1; info["depth"] = int(parts[i])
+            i += 1
+            info["depth"] = int(parts[i])
         elif token == "score":
             i += 1
             if parts[i] == "cp":
-                i += 1; info["score_cp"] = int(parts[i])
+                i += 1
+                info["score_cp"] = int(parts[i])
             elif parts[i] == "mate":
-                i += 1; info["score_mate"] = int(parts[i])
+                i += 1
+                info["score_mate"] = int(parts[i])
+        elif token == "multipv":
+            i += 1
+            info["multipv"] = int(parts[i])
         elif token == "pv":
             i += 1
             pv_moves = []
-            while i < len(parts) and parts[i] not in ("depth","score","nodes","nps","time"):
+            while i < len(parts) and parts[i] not in _PV_STOP_TOKENS:
                 pv_moves.append(parts[i])
                 i += 1
             info["pv"] = pv_moves
-            continue
-        elif token in ("nodes","nps","time","currmove","currmovenumber","hashfull",
-                       "tbhits","cpuload","string"):
-            i += 1
-        i += 1
+            continue  # already advanced i inside the while loop
+        elif token in ("nodes", "nps", "time", "currmove", "currmovenumber",
+                       "hashfull", "tbhits", "cpuload", "string", "seldepth"):
+            i += 1  # skip the value
+        i += 1  # move to next token
     return info
 
 def parse_bestmove_line(line: str) -> Optional[str]:

@@ -10,6 +10,7 @@ from src.engine.manager import EngineManager
 from src.io.fen import board_to_fen
 from src.core.pieces import Colour
 
+
 class AnalysisPanel(QWidget):
     arrows_changed = Signal(list)
     markers_changed = Signal(list)
@@ -50,7 +51,7 @@ class AnalysisPanel(QWidget):
         self.engine: Optional[EngineManager] = None
         self.current_fen: Optional[str] = None
         self.enabled = False
-        self._current_pv_lines: List[dict] = []
+        self._latest_info: Optional[Dict] = None       # <-- only the deepest info line
 
         self.start_btn.clicked.connect(self.start_analysis)
         self.stop_btn.clicked.connect(self.stop_analysis)
@@ -91,58 +92,66 @@ class AnalysisPanel(QWidget):
 
     def set_position(self, fen: str):
         self.current_fen = fen
+        self._latest_info = None           # reset on new position
+        self.table.setRowCount(0)
         if self.enabled and self.engine:
             self.engine.set_position(fen, [])
             self.status_label.setText("Thinking...")
 
     def _on_info(self, info: dict):
         self.status_label.setText("")
-        pv_num = info.get("multipv", 1)
-        found = False
-        for i, line in enumerate(self._current_pv_lines):
-            if line.get("multipv") == pv_num:
-                self._current_pv_lines[i] = info
-                found = True
-                break
-        if not found:
-            self._current_pv_lines.append(info)
-        self._current_pv_lines.sort(key=lambda x: x.get("multipv", 999))
+        depth = info.get("depth", 0)
+        # Keep only the deepest info line we have seen so far
+        if self._latest_info is None or depth >= self._latest_info.get("depth", 0):
+            self._latest_info = info
+        self._display_info(self._latest_info)
 
+    def _display_info(self, info: dict):
+        """Fill the table with the single PV from `info`."""
         self.table.setRowCount(0)
         arrows = []
         markers = []
-        for line in self._current_pv_lines:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            pv = line.get("pv", [])
-            move_str = pv[0] if pv else "?"
-            move_item = QTableWidgetItem(move_str)
-            move_item.setFont(QFont("Arial", 10, QFont.Bold))
-            if row == 0:
-                from src.engine.protocol import uci_to_move
-                from src.ui.board_widget import BoardArrow, BoardMarker
-                move = uci_to_move(move_str)
-                if move:
-                    arrows.append(BoardArrow(move.from_r, move.from_c, move.to_r, move.to_c, QColor(0, 255, 0, 120)))
-                    markers.append(BoardMarker(move.to_r, move.to_c, QColor(0, 255, 0, 150), corner="center"))
-            self.table.setItem(row, 0, move_item)
 
-            score_cp = line.get("score_cp")
-            score_mate = line.get("score_mate")
-            if score_mate is not None:
-                score_str = f"Mate {score_mate}"
-            elif score_cp is not None:
-                score_str = f"{score_cp/100:.2f}"
-            else:
-                score_str = "?"
-            self.table.setItem(row, 1, QTableWidgetItem(score_str))
+        pv = info.get("pv", [])
+        move_str = pv[0] if pv else "?"
+        depth = info.get("depth", 0)
 
-            depth = line.get("depth", "?")
-            self.table.setItem(row, 2, QTableWidgetItem(str(depth)))
+        # Move column
+        move_item = QTableWidgetItem(move_str)
+        move_item.setFont(QFont("Arial", 10, QFont.Bold))
+        self.table.insertRow(0)
+        self.table.setItem(0, 0, move_item)
 
-            pv_str = " ".join(pv) if pv else ""
-            self.table.setItem(row, 3, QTableWidgetItem(pv_str))
+        # Score column
+        score_cp = info.get("score_cp")
+        score_mate = info.get("score_mate")
+        if score_mate is not None:
+            score_str = f"Mate {score_mate}"
+        elif score_cp is not None:
+            score_str = f"{score_cp/100:.2f}"
+        else:
+            score_str = "?"
+        self.table.setItem(0, 1, QTableWidgetItem(score_str))
 
+        # Depth column
+        self.table.setItem(0, 2, QTableWidgetItem(str(depth)))
+
+        # PV column
+        pv_str = " ".join(pv) if pv else ""
+        self.table.setItem(0, 3, QTableWidgetItem(pv_str))
+
+        # Arrows / markers for the best move
+        if pv:
+            from src.engine.protocol import uci_to_move
+            from src.ui.board_widget import BoardArrow, BoardMarker
+            move = uci_to_move(pv[0])
+            if move:
+                arrows.append(BoardArrow(move.from_r, move.from_c,
+                                         move.to_r, move.to_c,
+                                         QColor(0, 255, 0, 120)))
+                markers.append(BoardMarker(move.to_r, move.to_c,
+                                           QColor(0, 255, 0, 150),
+                                           corner="center"))
         if arrows:
             self.arrows_changed.emit(arrows)
         if markers:

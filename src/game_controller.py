@@ -1,4 +1,4 @@
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import QDialog, QMessageBox, QMenu
 from PySide6.QtGui import QCursor
 from typing import Optional, List, Tuple
@@ -12,7 +12,7 @@ from src.core.rules import legal_moves, material_score
 from src.core.game_state import GameState, game_result
 from src.core.variations import MoveNode
 from src.io.fpgn import FPGNWriter, move_to_fpgn, FPGNReader
-from src.engine.manager import EngineManager
+from src.engine.manager import EngineManager, EngineState
 from src.engine.protocol import uci_to_move
 from src.engine.multi_response import MultiEngineResponse, EngineResponse
 from src.core.analysis_db import AnalysisDB
@@ -103,9 +103,12 @@ class GameController(QObject):
         self.loaded_games: List[Tuple[str, MoveNode]] = []
         self.current_game_index: int = -1
 
-        # Variation mode: when True, all moves go as variations of _variation_parent
+        # Variation mode
         self._in_variation = False
         self._variation_parent: Optional[MoveNode] = None
+
+        # Timeout timer for engine readiness – stored as instance attribute
+        self._engine_ready_timeout: Optional[QTimer] = None
 
     # -----------------------------------------------------------------
     def start_new_game(self):
@@ -168,7 +171,6 @@ class GameController(QObject):
         })
 
     def save_game(self):
-        """Manually save the current game, replaying to get correct piece types."""
         if not self.move_history:
             self.status_update.emit("No moves to save.")
             return
@@ -192,7 +194,6 @@ class GameController(QObject):
         self.fpgn_writer.close()
         self.status_update.emit("Game saved.")
 
-    # -----------------------------------------------------------------
     def _current_engine(self) -> Optional[EngineManager]:
         return self.white_engine if self.state.turn == Colour.WHITE else self.black_engine
 
@@ -214,10 +215,41 @@ class GameController(QObject):
 
         engine = self._current_engine()
         if engine and not self.engine_thinking and not self.review_mode:
-            engine.send_position(self.move_history)
-            engine.send_go(movetime=10000)
-            self.engine_thinking = True
-            self.status_update.emit("Engine thinking...")
+            engine.set_position(self.move_history)
+            if engine.state == EngineState.READY:
+                engine.go(movetime=10000)
+                self.engine_thinking = True
+                self.status_update.emit("Engine thinking...")
+            else:
+                # Wait for engine to become ready asynchronously
+                def on_ready():
+                    try:
+                        engine.engine_ready.disconnect(on_ready)
+                    except TypeError:
+                        pass
+                    if self.engine_thinking:
+                        return
+                    engine.go(movetime=10000)
+                    self.engine_thinking = True
+                    self.status_update.emit("Engine thinking...")
+
+                engine.engine_ready.connect(on_ready)
+
+                # Safety timeout: 15 seconds, stored as instance attribute
+                self._engine_ready_timeout = QTimer(self)
+                self._engine_ready_timeout.setSingleShot(True)
+                def on_timeout():
+                    if self.engine_thinking:
+                        return
+                    try:
+                        engine.engine_ready.disconnect(on_ready)
+                    except TypeError:
+                        pass
+                    self.status_update.emit("Engine failed to become ready in time.")
+                    self._handle_engine_illegal_move("Engine timeout")
+                self._engine_ready_timeout.timeout.connect(on_timeout)
+                self._engine_ready_timeout.start(15000)
+                self.status_update.emit("Waiting for engine to be ready...")
         else:
             self.status_update.emit(f"{'White' if self.state.turn == Colour.WHITE else 'Black'}'s turn")
 
@@ -257,9 +289,6 @@ class GameController(QObject):
                 self.current_legal_moves = []
                 self.board_widget.set_selected(None, [])
 
-    # -----------------------------------------------------------------
-    # Promotion – rules as specified
-    # -----------------------------------------------------------------
     def _handle_promotion(self, move: Move) -> Optional[Move]:
         piece = self.state.board.get_piece(move.from_r, move.from_c)
         if piece.ptype not in PROMOTABLE_TYPES:
@@ -302,7 +331,6 @@ class GameController(QObject):
                 return Move(move.from_r, move.from_c, move.to_r, move.to_c, dlg.chosen_piece)
             return Move(move.from_r, move.from_c, move.to_r, move.to_c)
 
-    # -----------------------------------------------------------------
     def _execute_move(self, move: Move, comment: str = ""):
         piece = self.state.board.get_piece(move.from_r, move.from_c)
         move_str = move_to_fpgn(move, piece.ptype)
@@ -322,7 +350,7 @@ class GameController(QObject):
             if self._in_variation:
                 var_node = parent_node.add_variation(move)
                 self.current_node = var_node
-                self._variation_parent = parent_node  # stay in variation mode
+                self._variation_parent = parent_node
                 indicator = "V"
             else:
                 new_node = parent_node.add_main_move(move)
@@ -381,7 +409,6 @@ class GameController(QObject):
                     return Move(move.from_r, move.from_c, move.to_r, move.to_c, targets[0])
         return move
 
-    # -----------------------------------------------------------------
     def _on_engine_bestmove(self, uci_str: str):
         if not self.engine_thinking:
             return
@@ -403,15 +430,18 @@ class GameController(QObject):
         self._execute_move(move)
 
     def _on_engine_info(self, info: dict): pass
+
     def _on_engine_error(self, err_msg: str):
         self.status_update.emit(f"Engine error: {err_msg}")
+        # Any engine error during a game is fatal – award win to opponent
+        if self.game_active and self.engine_thinking:
+            self._handle_engine_illegal_move("Engine error")
 
     def _handle_engine_resign(self):
         self._end_game(self.state.turn.opponent(), "resignation")
     def _handle_engine_illegal_move(self, reason: str):
         self._end_game(self.state.turn.opponent(), "illegal move")
 
-    # -----------------------------------------------------------------
     def takeback(self, ply: int = -1):
         if not self.review_mode:
             self.status_update.emit("Takeback only available in review mode.")
@@ -475,20 +505,14 @@ class GameController(QObject):
         if not self.review_mode and self.game_active:
             self._start_turn()
 
-    # -----------------------------------------------------------------
-    # Variation management
-    # -----------------------------------------------------------------
     def add_variation(self):
-        """Enter variation mode. All subsequent moves become a variation of the current node."""
         self._in_variation = True
         self._variation_parent = self.current_node
         self.status_update.emit("Variation mode ON. Right-click a move and choose 'Return to main line' to exit.")
 
     def return_to_main_line(self):
-        """Exit variation mode and return to the main line."""
         self._in_variation = False
         self._variation_parent = None
-        # Replay main line from root
         self.state = GameState()
         node = self.root.next_main
         self.move_history.clear()
@@ -576,13 +600,11 @@ class GameController(QObject):
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, n=var_node: self.switch_variation(n))
         menu.addSeparator()
-        # Option to return to main line
         if self._in_variation:
             ret_action = menu.addAction("Return to main line")
             ret_action.triggered.connect(self.return_to_main_line)
         menu.exec(QCursor.pos())
 
-    # -----------------------------------------------------------------
     def save_current_analysis(self, pv: str, mrm: MultiEngineResponse, movetime: int = 0, depth: int = 0):
         if mrm is not None:
             self.analysis_db.save_analysis(self.state, pv, mrm, movetime, depth)
@@ -590,7 +612,6 @@ class GameController(QObject):
     def load_analysis(self, pv: str, name: str) -> Optional[MultiEngineResponse]:
         return self.analysis_db.load_analysis(self.state, pv, name)
 
-    # -----------------------------------------------------------------
     def update_captured_display(self):
         white_score = material_score(self.state.board, Colour.WHITE)
         black_score = material_score(self.state.board, Colour.BLACK)
@@ -605,7 +626,6 @@ class GameController(QObject):
             self.white_clock.set_captured("")
             self.black_clock.set_captured("")
 
-    # -----------------------------------------------------------------
     def _handle_game_end(self, result):
         if result[0] == 'draw':
             score_diff = result[1]
@@ -643,7 +663,6 @@ class GameController(QObject):
         elif self.black_clock.time_left_ms == 0:
             self._end_game("Black timeout")
 
-    # -----------------------------------------------------------------
     def _goto_ply(self, ply: int):
         if ply < 0 or ply >= len(self.move_history):
             return
@@ -666,7 +685,6 @@ class GameController(QObject):
     def get_legal_moves(self) -> List[Move]:
         return legal_moves(self.state.board, self.state.turn)
 
-    # -----------------------------------------------------------------
     def load_games_from_fpgn(self, file_path: str):
         games = FPGNReader.read_file_tree(file_path)
         if not games:

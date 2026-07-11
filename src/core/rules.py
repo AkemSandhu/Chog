@@ -4,57 +4,14 @@ from .pieces import Piece, PieceType, Colour, PROMOTABLE_TYPES
 from .board import Board, ROWS, COLS
 from .movegen import pseudo_legal_moves, Move, _is_promotion_zone
 
-def _piece_can_move_from(board: Board, row: int, col: int, ptype: PieceType, colour: Colour) -> bool:
-    return _piece_can_move_check(board, row, col, ptype, colour)
+def _in_bounds(r, c):
+    return 0 <= r < ROWS and 0 <= c < COLS
 
-def _piece_can_move_check(board: Board, r: int, c: int, ptype: PieceType, colour: Colour) -> bool:
-    forward = 1 if colour == Colour.WHITE else -1
-    def valid_target(nr, nc):
-        if not (0 <= nr < ROWS and 0 <= nc < COLS):
-            return False
-        target = board.get_piece(nr, nc)
-        return target is None or target.colour != colour
-
-    if ptype == PieceType.PAWN:
-        if _in_bounds(r+forward, c) and board.is_empty(r+forward, c):
-            return True
-        for dc in (-1, 1):
-            nr, nc = r+forward, c+dc
-            if _in_bounds(nr, nc):
-                target = board.get_piece(nr, nc)
-                if target and target.colour != colour:
-                    return True
-    elif ptype == PieceType.LANCE:
-        nr = r + forward
-        while 0 <= nr < ROWS:
-            if board.is_empty(nr, c):
-                return True
-            target = board.get_piece(nr, c)
-            if target and target.colour != colour:
-                return True
-            break
-    elif ptype == PieceType.HORSE:
-        nr = r + 2*forward
-        for dc in (-1, 1):
-            if _in_bounds(nr, c+dc):
-                target = board.get_piece(nr, c+dc)
-                if target is None or target.colour != colour:
-                    return True
-    elif ptype == PieceType.EAGLE:
-        for dc in (1, -1):
-            nr, nc = r+forward, c+dc
-            while _in_bounds(nr, nc):
-                target = board.get_piece(nr, nc)
-                if target is None or target.colour != colour:
-                    return True
-                if target is not None:
-                    break
-                nr += forward; nc += dc
-    return False
-
-def _in_bounds(r, c): return 0 <= r < ROWS and 0 <= c < COLS
-
+# -------------------------------------------------------------------
+#  Check detection
+# -------------------------------------------------------------------
 def is_check(board: Board, colour: Colour) -> bool:
+    """Return True if `colour`'s king is in check."""
     king_pos = board.find_king(colour)
     if not king_pos:
         return False
@@ -65,17 +22,85 @@ def is_check(board: Board, colour: Colour) -> bool:
             return True
     return False
 
+# -------------------------------------------------------------------
+#  Apply a move to a board copy (used during legality testing)
+# -------------------------------------------------------------------
+def _apply_move(board: Board, move: Move):
+    piece = board.get_piece(move.from_r, move.from_c)
+    board.clear_square(move.from_r, move.from_c)
+    # handle captured piece automatically when we overwrite the square
+    board.clear_square(move.to_r, move.to_c)   # just in case
+    if move.promotion is not None:
+        piece = Piece(move.promotion, piece.colour)
+    board.set_piece(move.to_r, move.to_c, piece)
+
+# -------------------------------------------------------------------
+#  Check if a piece can still move after promoting (pawns etc.)
+# -------------------------------------------------------------------
+def _piece_can_still_move(board: Board, row: int, col: int, ptype: PieceType, colour: Colour) -> bool:
+    """True if a piece of type `ptype` at (row,col) has at least one legal move.
+       Used to enforce that forced promotions don't leave a piece immobile."""
+    forward = 1 if colour == Colour.WHITE else -1
+    if ptype == PieceType.PAWN:
+        if _in_bounds(row + forward, col) and board.is_empty(row + forward, col):
+            return True
+        for dc in (-1, 1):
+            nr, nc = row + forward, col + dc
+            if _in_bounds(nr, nc):
+                target = board.get_piece(nr, nc)
+                if target and target.colour != colour:
+                    return True
+    elif ptype == PieceType.LANCE:
+        r = row + forward
+        while 0 <= r < ROWS:
+            if board.is_empty(r, col):
+                return True
+            target = board.get_piece(r, col)
+            if target and target.colour != colour:
+                return True
+            break
+    elif ptype == PieceType.HORSE:
+        nr = row + 2 * forward
+        for dc in (-1, 1):
+            if _in_bounds(nr, col + dc):
+                target = board.get_piece(nr, col + dc)
+                if target is None or target.colour != colour:
+                    return True
+    elif ptype == PieceType.EAGLE:
+        for dc in (1, -1):
+            r, c = row + forward, col + dc
+            while _in_bounds(r, c):
+                target = board.get_piece(r, c)
+                if target is None or target.colour != colour:
+                    return True
+                if target is not None:
+                    break
+                r += forward
+                c += dc
+    return False
+
+# -------------------------------------------------------------------
+#  Legal move generation
+# -------------------------------------------------------------------
 def legal_moves(board: Board, colour: Colour) -> List[Move]:
     moves = []
     for move in pseudo_legal_moves(board, colour):
+        # Make the move on a copy of the board
         new_board = board.copy()
-        _apply_move_to_board(new_board, move)
+        _apply_move(new_board, move)
+
+        # 1. King safety
         if is_check(new_board, colour):
             continue
+
+        # 2. Forced promotion rule: if a promotable piece moves into the
+        #    promotion zone without promoting, it must still be able to move
+        #    (otherwise the move is illegal because it would be stuck).
         piece = board.get_piece(move.from_r, move.from_c)
         if piece and piece.ptype in PROMOTABLE_TYPES and move.promotion is None:
             if _is_promotion_zone(move.to_r, colour):
-                if not _piece_can_move_from(new_board, move.to_r, move.to_c, piece.ptype, colour):
+                if not _piece_can_still_move(new_board, move.to_r, move.to_c,
+                                             piece.ptype, colour):
                     continue
         moves.append(move)
     return moves
@@ -83,13 +108,9 @@ def legal_moves(board: Board, colour: Colour) -> List[Move]:
 def has_legal_moves(board: Board, colour: Colour) -> bool:
     return len(legal_moves(board, colour)) > 0
 
-def _apply_move_to_board(board: Board, move: Move):
-    piece = board.get_piece(move.from_r, move.from_c)
-    board.clear_square(move.from_r, move.from_c)
-    if move.promotion is not None:
-        piece = Piece(move.promotion, piece.colour)
-    board.set_piece(move.to_r, move.to_c, piece)
-
+# -------------------------------------------------------------------
+#  Material count for dead position detection
+# -------------------------------------------------------------------
 def material_score(board: Board, colour: Colour) -> int:
     score = 0
     for r in range(ROWS):

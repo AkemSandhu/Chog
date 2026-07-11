@@ -3,8 +3,8 @@ from typing import Optional, List, Dict
 from enum import Enum, auto
 import os
 import psutil
-import time
 import shlex
+import time
 
 from src.engine.protocol import (
     uci_to_move, parse_info_line, parse_bestmove_line, parse_ponder_move,
@@ -12,6 +12,17 @@ from src.engine.protocol import (
     build_learn_command, build_setoption_command, build_saveweights_command,
     build_loadweights_command
 )
+
+# Optional: log all engine I/O to a file for debugging
+_ENGINE_LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "engine_log.txt")
+
+def _log(msg: str):
+    try:
+        with open(_ENGINE_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+
 
 class EngineState(Enum):
     OFF = auto()
@@ -21,6 +32,7 @@ class EngineState(Enum):
     PONDERING = auto()
     STOPPING = auto()
     ERROR = auto()
+
 
 class EngineManager(QObject):
     info_received = Signal(dict)
@@ -51,6 +63,10 @@ class EngineManager(QObject):
         self._pondering = False
         self._ponderhit_sent = False
 
+        self._kill_timer = QTimer(self)
+        self._kill_timer.setSingleShot(True)
+        self._kill_timer.timeout.connect(self._on_kill_timer_timeout)
+
         self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
     @property
@@ -68,6 +84,7 @@ class EngineManager(QObject):
     def start(self):
         if self.process is not None:
             self.close()
+        _log(f"--- Starting engine: {self.path_exe} {' '.join(self.args)}")
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.SeparateChannels)
         self.process.setProgram(self.path_exe)
@@ -85,7 +102,9 @@ class EngineManager(QObject):
 
         self.process.start()
         if not self.process.waitForStarted(5000):
-            self.error_occurred.emit(f"Engine '{self.path_exe}' failed to start. Check the path and ensure Python is installed.")
+            msg = f"Engine '{self.path_exe}' failed to start."
+            _log(f"ERROR: {msg}")
+            self.error_occurred.emit(msg)
             return
         self._state = EngineState.INITIALIZING
         self._send_command("chog")
@@ -94,6 +113,7 @@ class EngineManager(QObject):
         if self._state == EngineState.OFF:
             return
         self._move_stop_timer.stop()
+        self._kill_timer.stop()
         if self.process and self.process.state() != QProcess.NotRunning:
             self._send_command("quit")
             if not self.process.waitForFinished(2000):
@@ -106,6 +126,7 @@ class EngineManager(QObject):
     def _kill_process_tree(self):
         if self.process is None:
             return
+        _log("Killing engine process tree...")
         try:
             pid = self.process.processId()
             if pid > 0:
@@ -156,6 +177,7 @@ class EngineManager(QObject):
            infinite: bool = False, wtime: int = None, btime: int = None,
            winc: int = None, binc: int = None, ponder: bool = False):
         if self._state not in (EngineState.READY, EngineState.PONDERING):
+            _log(f"WARNING: go() called but engine not ready (state={self._state})")
             return
         cmd = build_go_command(wtime=wtime, btime=btime, movetime=movetime,
                                depth=depth, nodes=nodes, infinite=infinite,
@@ -164,8 +186,18 @@ class EngineManager(QObject):
         self._state = EngineState.THINKING if not ponder else EngineState.PONDERING
         self._pondering = ponder
         self._send_command(cmd)
+
+        # Arm timers only for finite searches
+        if infinite:
+            # No timers – analysis runs until the user presses Stop
+            _log("Infinite analysis – no timers armed")
+            return
+
         if movetime and movetime > 0:
             self._move_stop_timer.start(movetime + 200)
+            self._kill_timer.start(movetime * 2 + 10000)
+        else:
+            self._kill_timer.start(120_000)
 
     def ponderhit(self):
         if self._state == EngineState.PONDERING:
@@ -176,18 +208,27 @@ class EngineManager(QObject):
     def stop(self):
         if self._state in (EngineState.THINKING, EngineState.PONDERING):
             self._move_stop_timer.stop()
+            self._kill_timer.stop()
             self._state = EngineState.STOPPING
             self._send_command("stop")
 
     def _on_move_timer_timeout(self):
         if self._state == EngineState.THINKING:
+            _log("Soft timeout – sending stop")
             self.stop()
+
+    def _on_kill_timer_timeout(self):
+        _log("Hard timeout – killing engine process")
+        self.error_occurred.emit("Engine unresponsive – forcibly terminated.")
+        self._kill_process_tree()
+        self._state = EngineState.ERROR
 
     def send_command(self, command: str):
         self._send_command(command)
 
     def _send_command(self, cmd: str):
         if self.process and self.process.state() == QProcess.Running:
+            _log(f">> {cmd}")
             self.process.write((cmd + "\n").encode())
 
     def _read_stdout(self):
@@ -195,12 +236,18 @@ class EngineManager(QObject):
         self._buffer += data
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
-            self._process_line(line.strip())
+            line = line.strip()
+            _log(f"<< {line}")
+            self._process_line(line)
 
     def _read_stderr(self):
         data = self.process.readAllStandardError().data().decode()
         if data:
-            self.error_occurred.emit(f"Engine stderr: {data.strip()}")
+            for line in data.splitlines():
+                line = line.strip()
+                if line:
+                    _log(f"STDERR: {line}")
+                    self.error_occurred.emit(f"Engine stderr: {line}")
 
     def _process_line(self, line: str):
         if not line:
@@ -213,7 +260,7 @@ class EngineManager(QObject):
                 self._pending_options.clear()
                 self._set_option("MultiPV", str(self._multipv))
                 self._send_command("isready")
-            elif line == "readyok":               # allow early readyok
+            elif line == "readyok":
                 self._state = EngineState.READY
                 self.engine_ready.emit()
             elif line.startswith("id ") or line.startswith("option "):
@@ -227,6 +274,8 @@ class EngineManager(QObject):
                 if info:
                     self.info_received.emit(info)
             elif line.startswith("bestmove "):
+                self._move_stop_timer.stop()
+                self._kill_timer.stop()
                 best = parse_bestmove_line(line)
                 if best:
                     self._current_bestmove = best
@@ -234,9 +283,12 @@ class EngineManager(QObject):
                     if ponder_move and self._pondering:
                         pass
                     self._state = EngineState.READY
-                    self._move_stop_timer.stop()
                     self.bestmove_received.emit(best)
 
     def _on_finished(self, exit_code, exit_status):
+        self._move_stop_timer.stop()
+        self._kill_timer.stop()
+        if self._state in (EngineState.THINKING, EngineState.PONDERING):
+            self.error_occurred.emit("Engine process terminated unexpectedly.")
         self._state = EngineState.OFF
         self.finished.emit()
